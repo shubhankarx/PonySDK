@@ -257,6 +257,14 @@ public enum ServerToClientModel {
     UI_COMPONENT_ID(ValueTypeModel.STRING),
     UI_COMPONENT_TEXT(ValueTypeModel.STRING),
 
+    // Added these new enum values before the final closing semicolon
+    DICTIONARY_REFERENCE(ValueTypeModel.INTEGER),
+    DICTIONARY_PATTERN_START(ValueTypeModel.INTEGER),
+    DICTIONARY_PATTERN_END(ValueTypeModel.NULL),
+
+    // also added this new enum value before the final closing semicolon
+    DICTIONARY_REQUEST(ValueTypeModel.INTEGER),
+
     // Old, useless or not used
     POPUP_GLASS_STYLE_NAME(ValueTypeModel.INTEGER),
     DISCLOSURE_PANEL_OPEN_IMG(ValueTypeModel.INTEGER),

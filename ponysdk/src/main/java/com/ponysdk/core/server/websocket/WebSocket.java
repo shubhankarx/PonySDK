@@ -25,6 +25,7 @@ package com.ponysdk.core.server.websocket;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -71,6 +72,15 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private Listener listener;
 
     private long lastSentPing;
+
+    // Dictionary for optimizing repetitive message patterns
+    private final ModelValueDictionary dictionary = new ModelValueDictionary();
+    // Current batch of model-value pairs for pattern detection
+    private final List<ModelValuePair> currentBatch = new ArrayList<>();
+    // Threshold for considering model-value sequences as a batch
+    private static final int BATCH_SIZE_THRESHOLD = 4;
+
+
 
     public WebSocket() {
     }
@@ -316,14 +326,50 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     public void endObject() {
         encode(ServerToClientModel.END, null);
     }
+    
 
+    
+    // Flag to enable/disable dictionary compression
+    private boolean dictionaryEnabled = true;
+
+    /**
+     * Encodes a model-value pair for transmission to the client.
+     * If dictionary optimization is enabled, pairs are batched and
+     * compared against known patterns before transmission.
+     *
+     * @param model the model enumeration value
+     * @param value the value associated with the model
+     */
     @Override
     public void encode(final ServerToClientModel model, final Object value) {
+        // Record for dictionary if enabled
+        if (dictionaryEnabled) {
+            currentBatch.add(new ModelValuePair(model, value));
+            
+            // Process batch if it's an END instruction or threshold reached
+            if (model == ServerToClientModel.END || currentBatch.size() >= BATCH_SIZE_THRESHOLD) {
+                processBatch();
+                return; // Skip original encode since processBatch handled it
+            }
+        }
+        
+        // Original encode logic for non-batched or when dictionary is disabled
+        encodeDirectly(model, value);
+    }
+
+    /**
+     * Direct encoding implementation without dictionary optimization.
+     * Ensures proper UI context acquisition and error handling.
+     * 
+     * @param model the model enumeration value
+     * @param value the value associated with the model
+     */
+    private void encodeDirectly(final ServerToClientModel model, final Object value) {
         if (UIContext.get() == null) {
             log.warn("encode in websocket without current ui context acquired", new Exception());
             uiContext.acquire();
             try {
-                encode(model, value);
+                encodeDirectly(model, value);
             } finally {
                 uiContext.release();
             }
@@ -341,6 +387,69 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
     }
 
+    /**
+     * Processes the current batch of model-value pairs for potential dictionary optimization.
+     * If the batch matches a known pattern, sends a reference instead of the full content.
+     * Otherwise records the pattern for future optimization and sends full content.
+     */
+    private void processBatch() {
+        if (currentBatch.isEmpty()) return;
+        
+        // Check if batch is eligible for dictionary
+        if (currentBatch.size() >= 2) {
+            Integer patternId = dictionary.getPatternId(currentBatch);
+            
+            if (patternId != null) {
+                // Send reference to pattern instead of full data
+                encodeDirectly(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                currentBatch.clear();
+                return;
+            }
+            
+            // Record this pattern for future use
+            dictionary.recordPattern(new ArrayList<>(currentBatch));
+        }
+        
+        // Send all pairs in the batch
+        for (ModelValuePair pair : currentBatch) {
+            encodeDirectly(pair.getModel(), pair.getValue());
+        }
+        currentBatch.clear();
+    }
+
+    /**
+     * Handles client requests for dictionary pattern definitions.
+     * When a client receives a reference to an unknown pattern,
+     * it can request the full pattern definition.
+     * 
+     * @param patternId the ID of the requested pattern
+     */
+    public void handleDictionaryRequest(final int patternId) {
+        List<ModelValuePair> pattern = dictionary.getPattern(patternId);
+        if (pattern == null) {
+            log.warn("Dictionary pattern not found: {}", patternId);
+            return;
+        }
+        
+        encodeDirectly(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
+        for (ModelValuePair pair : pattern) {
+            encodeDirectly(pair.getModel(), pair.getValue());
+        }
+        encodeDirectly(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+    }
+    
+    /**
+     * Enables or disables dictionary-based compression.
+     * When disabled, all model-value pairs are sent directly.
+     * 
+     * @param enabled true to enable dictionary compression, false to disable
+     */
+    public void setDictionaryEnabled(final boolean enabled) {
+        this.dictionaryEnabled = enabled;
+        if (!enabled) {
+            currentBatch.clear();
+        }
+    }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
         try {
