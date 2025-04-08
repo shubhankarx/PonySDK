@@ -187,7 +187,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         } else {
             log.info("UI Context #{} is destroyed, message dropped from terminal : {}", uiContext != null ? uiContext.getID() : -1,
                     message);
-        }
     }
 
     private void processRoundtripLatency(final JsonObject jsonObject) {

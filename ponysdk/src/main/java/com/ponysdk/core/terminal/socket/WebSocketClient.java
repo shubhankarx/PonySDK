@@ -81,6 +81,7 @@ public class WebSocketClient {
                 final ArrayBuffer buffer = (ArrayBuffer) data; //TODO nciaravola avoid cast ?
                 try {
                     uiBuilder.updateMainTerminal(window.newUint8Array(buffer, 0, buffer.getByteLength()));
+                    processArrayBuffer(buffer, uiBuilder);
                 } catch (final Exception e) {
                     log.log(Level.SEVERE, "Error while processing the " + buffer, e);
                 }

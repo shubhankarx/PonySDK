@@ -283,6 +283,12 @@ public class UIContext {
      * @param jsonObject the JSON instructions
      */
     public void fireClientData(final JsonObject jsonObject) {
+        //New 
+        if (jsonObject.containsKey(ClientToServerModel.DICTIONARY_REQUEST.toStringValue())) {
+            final int patternId = jsonObject.getJsonNumber(ClientToServerModel.DICTIONARY_REQUEST.toStringValue()).intValue();
+            getWebSocket().handleDictionaryRequest(patternId);
+            return;
+        }
         if (jsonObject.containsKey(ClientToServerModel.TYPE_HISTORY.toStringValue())) {
             history.fireHistoryChanged(jsonObject.getString(ClientToServerModel.TYPE_HISTORY.toStringValue()));
         } else {

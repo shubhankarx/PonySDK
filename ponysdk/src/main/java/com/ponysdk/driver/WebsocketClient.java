@@ -26,6 +26,8 @@ package com.ponysdk.driver;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +46,13 @@ import javax.websocket.MessageHandler;
 import javax.websocket.MessageHandler.Whole;
 import javax.websocket.Session;
 
+import com.ponysdk.core.model.ClientToServerModel;
+import com.ponysdk.core.model.ServerToClientModel;
+import com.ponysdk.core.model.ValueTypeModel;
+import com.ponysdk.core.terminal.UIBuilder;
+import com.ponysdk.core.terminal.instruction.PTInstruction;
+import com.ponysdk.core.terminal.model.BinaryModel;
+import com.ponysdk.core.terminal.model.ReaderBuffer;
 import com.ponysdk.core.useragent.Browser;
 import org.glassfish.tyrus.client.ClientManager;
 import org.glassfish.tyrus.client.ClientProperties;
@@ -55,6 +64,12 @@ class WebsocketClient implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(WebsocketClient.class);
 
     private volatile Session session;
+
+    private final Map<Integer, List<BinaryModel>> patternDictionary = new HashMap<>();
+    private boolean receivingPattern = false;
+    private int currentPatternId = -1;
+    private final List<BinaryModel> currentPattern = new ArrayList<>();
+
 
     private final static List<String> USER_AGENT = List.of("PonyDriver");
     private final static Configurator configurator = new Configurator() {
@@ -84,6 +99,8 @@ class WebsocketClient implements AutoCloseable {
         this.extensions = List.of(new PonyDriverPerMessageDeflateExtension(bandwidthListener));
         this.sessionListener = sessionListener;
     }
+
+    
 
     public void connect(final URI uri) throws Exception {
         if (session != null) session.close();
@@ -137,6 +154,118 @@ class WebsocketClient implements AutoCloseable {
 
     public void sendMessage(final String message) throws IOException {
         session.getBasicRemote().sendText(message);
+    }
+
+
+/**
+ * Process binary data from WebSocket with dictionary support
+ * 
+ * @param buffer The received binary data
+ * @param uiBuilder The UI builder to update
+ */
+private void processArrayBuffer(ArrayBuffer buffer, UIBuilder uiBuilder) {
+    final Uint8Array view = window.newUint8Array(buffer, 0, buffer.getByteLength());
+    
+    ReaderBuffer reader = new ReaderBuffer(view);
+    BinaryModel binaryModel;
+    
+    while ((binaryModel = reader.readBinaryModel()) != null) {
+        final ServerToClientModel model = binaryModel.getModel();
+        
+        if (model == ServerToClientModel.DICTIONARY_REFERENCE) {
+            // Handle dictionary reference
+            int patternId = binaryModel.getIntValue();
+            List<BinaryModel> pattern = patternDictionary.get(patternId);
+            
+            if (pattern != null) {
+                // Apply pattern
+                for (BinaryModel modelValue : pattern) {
+                    uiBuilder.updateMainTerminal(modelValue);
+                }
+            } else {
+                // Request pattern
+                if (log.isLoggable(Level.INFO)) {
+                    log.info("Requesting unknown dictionary pattern: " + patternId);
+                }
+                requestDictionaryPattern(patternId);
+            }
+        }
+        else if (model == ServerToClientModel.DICTIONARY_PATTERN_START) {
+            // Start recording pattern
+            receivingPattern = true;
+            currentPatternId = binaryModel.getIntValue();
+            currentPattern.clear();
+        }
+        else if (model == ServerToClientModel.DICTIONARY_PATTERN_END) {
+            // Save pattern
+            if (receivingPattern && currentPatternId != -1) {
+                patternDictionary.put(currentPatternId, new ArrayList<>(currentPattern));
+                receivingPattern = false;
+                currentPatternId = -1;
+                currentPattern.clear();
+            }
+        }
+        else {
+            // Record if receiving a pattern
+            if (receivingPattern) {
+                currentPattern.add(cloneBinaryModel(binaryModel));
+            }
+            
+            // Normal processing
+            uiBuilder.updateMainTerminal(binaryModel);
+        }
+    }
+}
+
+    /**
+     * Request a dictionary pattern from the server
+     * 
+     * @param patternId The ID of the requested pattern
+     */
+    private void requestDictionaryPattern(int patternId) {
+        final elemental.json.JsonObject instruction = elemental.json.Json.createObject();
+        instruction.put(ClientToServerModel.DICTIONARY_REQUEST.toStringValue(), patternId);
+        send(instruction.toJson());
+    }
+
+    /**
+     * Create a clone of a BinaryModel
+     * 
+     * @param model The model to clone
+     * @return A clone of the input model
+     */
+    private BinaryModel cloneBinaryModel(BinaryModel model) {
+        final BinaryModel clone = new BinaryModel();
+        
+        final ServerToClientModel modelType = model.getModel();
+        final ValueTypeModel valueType = modelType.getTypeModel();
+        
+        if (valueType == ValueTypeModel.NULL) {
+            clone.init(modelType, model.getSize());
+        } else if (valueType == ValueTypeModel.BOOLEAN) {
+            clone.init(modelType, model.getBooleanValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.BYTE) {
+            clone.init(modelType, model.getByteValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.SHORT) {
+            clone.init(modelType, model.getShortValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.INTEGER) {
+            clone.init(modelType, model.getIntValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.LONG) {
+            clone.init(modelType, model.getLongValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.DOUBLE) {
+            clone.init(modelType, model.getDoubleValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.FLOAT) {
+            clone.init(modelType, model.getFloatValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.STRING) {
+            clone.init(modelType, model.getStringValue(), model.getSize());
+        } else if (valueType == ValueTypeModel.ARRAY) {
+            clone.init(modelType, model.getArrayValue(), model.getSize());
+        } else {
+            // Default fallback
+            clone.init(modelType, model.getSize());
+        }
+        
+        return clone;
     }
 
     @Override
