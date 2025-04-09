@@ -1,0 +1,23 @@
+name: Sync from Public PonySDK
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Every day at midnight UTC
+  workflow_dispatch: # Manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout private repo
+      uses: actions/checkout@v3
+
+    - name: Pull from public PonySDK
+      run: |
+        git config --global user.email "your@email.com"
+        git config --global user.name "Your Name"
+
+        git remote add upstream https://github.com/shubhankarx/PonySDK.git
+        git fetch upstream
+        git merge upstream/main --allow-unrelated-histories -m "Sync from public"
+        git push origin main
