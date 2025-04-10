@@ -1,0 +1,8 @@
+build
+bin
+src-generated
+.classpath
+/sample.iml
+/log/
+/launcher/
+/.project

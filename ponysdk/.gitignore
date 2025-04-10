@@ -1,0 +1,8 @@
+build
+bin
+/doc
+/javadoc.xml
+.classpath
+/ponysdk.iml
+.project
+/.settings
