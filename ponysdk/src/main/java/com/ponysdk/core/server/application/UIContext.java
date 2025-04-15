@@ -275,6 +275,10 @@ public class UIContext {
             return false;
         }
     }
+    //New Line
+    public WebSocket getWebSocket() {
+        return socket;
+    }
 
     /**
      * Sends data to the targeted {@link PObject} from {@link JsonObject} instruction

@@ -64,3 +64,47 @@ webSocket.setDictionaryEnabled(false);
 webSocket.setDictionaryEnabled(true);
 
 Current status: some bugs I have to fix, some errors
+
+Day 6 8/4/25
+
+I started with fixing errors and debugging the code. There were some issues in files:
+WebSocketClient.java
+UIContext.java
+WebsocketClient.java
+among others.
+
+Further, here's the function calls:
+• WebSocketClient (com.ponysdk.core.terminal.socket.WebSocketClient):
+– Opens the client WebSocket connection and registers onmessage.
+– When a message containing ArrayBuffer arrives, it calls processArrayBuffer(...).
+– That in turn calls uiBuilder.updateMainTerminal(...) to update the UI.
+
+• WebsocketClient (com.ponysdk.driver.WebsocketClient):
+– Also manages a WebSocket session on the driver side (similar flow).
+– processArrayBuffer(...) checks if it’s receiving a dictionary pattern or referencing one and uses requestDictionaryPattern(...) as needed.
+
+• WebSocket (com.ponysdk.core.server.websocket.WebSocket):
+– Server-side listener implementation.
+– encode(...) batches and possibly compresses data via processBatch() (dictionary compression).
+– handleDictionaryRequest(...) sends missing dictionary patterns back to the client.
+
+• ModelValuePair (com.ponysdk.core.server.websocket.ModelValuePair):
+– Represents a (model, value) to track repeated data patterns.
+
+• UIContext (com.ponysdk.core.server.application.UIContext):
+– Maintains server-side context, acquiring/releasing the UI context when encode(...) or other actions are performed.
+
+In effect, the client’s onmessage handlers call processArrayBuffer(...), which may request unknown dictionary data. On the server side, encode(...) in WebSocket can batch and compress data, then
+handleDictionaryRequest(...) if the client needs full pattern definitions. The UIContext provides the server context for these operations.
+
+Day 7 10/4/25
+
+I believe the errors have been restricgted to one file. I decided to read more files: UIBuilder, UIFactory, etc.
+I get a better understanding by going through function calls.
+
+Day 8 14/4/25
+
+With Mathieu, we start discussing today. We can discuss code, and practice more ideas.
+We decided to take the step back and complete the hashing system.
+So rather than having the complicated system now, we change it.
+

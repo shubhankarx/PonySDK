@@ -66,6 +66,8 @@ public enum ClientToServerModel {
 
     OPTION_TABINDEX_ACTIVATED("u"),
 
+    DICTIONARY_REQUEST(ValueTypeModel.INTEGER),
+
     HEARTBEAT_REQUEST("v"),
 
     HANDLER_BOOLEAN_VALUE_CHANGE("A"),
@@ -91,10 +93,17 @@ public enum ClientToServerModel {
     HANDLER_DOCUMENT_VISIBILITY("U"),
     HANDLER_DESTROY("V");
 
+    private final ValueTypeModel valueTypeModel;
     private final String key;
 
     ClientToServerModel(final String key) {
         this.key = key;
+        this.valueTypeModel = null;
+    }
+
+    ClientToServerModel(final ValueTypeModel valueTypeModel) {
+        this.key = null;
+        this.valueTypeModel = valueTypeModel;
     }
 
     public final String toStringValue() {
@@ -102,3 +111,4 @@ public enum ClientToServerModel {
     }
 
 }
+

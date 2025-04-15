@@ -59,7 +59,7 @@ public class UIBuilder {
     private final MapFromIntTo<PTObject> objectByID = Collections.mapFromIntTo();
     private final Map<UIObject, Integer> objectIDByWidget = new HashMap<>();
     private final MapFromIntTo<UIObject> widgetIDByObjectID = Collections.mapFromIntTo();
-    private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();
+    private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();  
 
     private final ReaderBuffer readerBuffer = new ReaderBuffer();
 
