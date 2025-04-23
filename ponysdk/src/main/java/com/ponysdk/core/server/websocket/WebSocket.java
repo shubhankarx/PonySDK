@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -72,6 +73,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     private long lastSentPing;
 
+    // New Lines
+    private final SimpleModelTracker modelTracker = new SimpleModelTracker();
+    private boolean dictionaryEnabled = true; // Default to disabled to avoid affecting existing behavior
+
+
     public WebSocket() {
     }
 
@@ -114,6 +120,21 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
+            // New Line: Schedule periodic dictionary printing (every 10 seconds)
+            new Thread(() -> {
+                try {
+                    while (isAlive() && isSessionOpen()) {
+                        Thread.sleep(10000);
+                        if (dictionaryEnabled) {
+                            //printDictionary();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
+            
+
         } catch (final Exception e) {
             log.error("Cannot process WebSocket instructions", e);
         }
@@ -331,16 +352,94 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         try {
-            if (loggerOut.isTraceEnabled())
-                loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
-            websocketPusher.encode(model, value);
-            if (listener != null) listener.onOutgoingPonyFrame(model, value);
+            // Record in dictionary if enabled
+            if (dictionaryEnabled) {
+                modelTracker.record(model, value);
+                
+                // Check if this value is frequent enough to use dictionary index
+                int frequency = modelTracker.getFrequency(model, value);
+                if (frequency >= 100) { // Threshold for using dictionary index
+                    int index = modelTracker.getDictionaryIndex(model, value);
+                    if (index != -1) {
+                        // Send dictionary index instead of actual value
+                        
+                        sendDictionaryIndex(model, index);
+                        return;
+                    }
+                }
+            }
+
+            // If not using dictionary, send actual value
+            sendValue(model, value);
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
         }
     }
 
+    private void sendDictionaryIndex(ServerToClientModel model, int index) {
+        // Create a special message type for dictionary indices
+        BinaryModel binaryModel = new BinaryModel();
+        binaryModel.setModel(model);
+        binaryModel.setDictionaryIndex(index);
+        send(binaryModel);
+    }
+
+    private void sendValue(ServerToClientModel model, Object value) {
+        if (model == null) return;
+        
+        // Record in dictionary if enabled
+        if (dictionaryEnabled) {
+            modelTracker.record(model, value);
+            
+            // Check if this value is frequent enough to use dictionary index
+            int frequency = modelTracker.getFrequency(model, value);
+            if (frequency >= 100) { // Threshold for using dictionary index
+                int index = modelTracker.getDictionaryIndex(model, value);
+                if (index != -1) {
+                    // Send dictionary index instead of actual value
+                    sendDictionaryIndex(model, index);
+                    return;
+                }
+            }
+        }
+        
+        // Fallback to sending actual value
+        websocketPusher.encode(model, value);
+        if (listener != null) listener.onOutgoingPonyFrame(model, value);
+    }
+
+    /**
+     * Enables or disables the dictionary tracking.
+     * 
+     * @param enabled True to enable, false to disable
+     */
+    public void setDictionaryEnabled(boolean enabled) {
+        this.dictionaryEnabled = enabled;
+        if (enabled) {
+            log.info("Dictionary tracking enabled");
+        } else {
+            log.info("Dictionary tracking disabled");
+        }
+    }
+
+    /**
+     * Checks if dictionary tracking is enabled.
+     * 
+     * @return True if enabled, false otherwise
+     */
+    public boolean isDictionaryEnabled() {
+        return dictionaryEnabled;
+    }
+
+    /**
+     * Gets the model tracker dictionary.
+     * 
+     * @return The SimpleModelTracker instance
+     */
+    public SimpleModelTracker getModelTracker() {
+        return modelTracker;
+    }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
         try {
@@ -354,6 +453,29 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             log.error("Cannot send UI component to client for UIContext #{}", uiContext.getID(), e);
         }
     }
+
+        /**
+     * Prints dictionary contents to stdout (minimal approach)
+     */
+    private void printDictionary() {
+        System.out.println("\n=== DICTIONARY CONTENTS ===");
+        System.out.println("Dictionary enabled: " + dictionaryEnabled);
+        System.out.println("Unique entries: " + modelTracker.getUniqueCount());
+        
+        Map<ModelValueKey, Integer> counts = modelTracker.getMostFrequent(20);
+        if (!counts.isEmpty()) {
+            System.out.println("\nTop 20 most frequent entries:");
+            int rank = 1;
+            for (Map.Entry<ModelValueKey, Integer> entry : counts.entrySet()) {
+                System.out.println(rank++ + ". " + entry.getKey() + " = " + entry.getValue() + " occurrences");
+            }
+        } else {
+            System.out.println("No entries in dictionary yet");
+        }
+        System.out.println("============================\n");
+    }
+
+
 
     private enum NiceStatusCode {
 

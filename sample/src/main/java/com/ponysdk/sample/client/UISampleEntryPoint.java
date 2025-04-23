@@ -136,6 +136,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
 
     @Override
     public void start(final UIContext uiContext) {
+        /* 
         final PElement input = Element.newInput();
         input.setAttribute("type", "checkbox");
         input.evalTerminalScript("element.checked = true");
@@ -146,7 +147,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
 
         final PLabel url = Element.newPLabel(String.valueOf(UIContext.get().getRequest().getParameterMap().get("toto")));
         PWindow.getMain().add(url);
-
+         */
         // Add a button to test sending custom UI components
         final PButton testButton = Element.newPButton("Send Custom UI Component");
         testButton.addClickHandler(e -> {
@@ -161,8 +162,15 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
             Runnable updateTask = new Runnable() {
                 @Override
                 public void run() {
-                    dynamicLabel.setText("Updated at " + new Date());
-                    
+
+                    PWindow.getMain().clear();
+                    //final PLabel dynamicLabel = Element.newPLabel("This label was created at ");
+                    dynamicLabel.addStyleName("custom-dynamic-component");
+                    PWindow.getMain().add(dynamicLabel);
+
+                    //final PLabel dynamicLabel2 = Element.newPLabel("This second label was created at " );
+                    //dynamicLabel2.addStyleName("custom-dynamic-component");
+                    //PWindow.getMain().add(dynamicLabel2);
                     // Schedule next update after this one completes
                     PScheduler.schedule(UIContext.get(), this, Duration.ofMillis(2000));
                 }
@@ -199,7 +207,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
                     PWindow.getMain().add(dynamicLabel);
         });
         PWindow.getMain().add(dynamicComponentButton);
-
+        /* 
         final StringTextBoxFormField formField = new StringTextBoxFormField("String Formfield");
         PWindow.getMain().add(formField);
         final ColorInputFormField colorInputFormField = new ColorInputFormField("Color FormField");
@@ -225,7 +233,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         mainLabel = Element.newPLabel("Can be dd by anybody : ₲ῳ₸");
         mainLabel.setAttributeLinkedToValue("data-title");
         mainLabel.setTitle("String ASCII");
-
+        */
         //PWindow.getMain().add(mainLabel);
         //testVisibilityHandler(PWindow.getMain());
         //testPerf();
@@ -245,6 +253,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         // Test of the new data grid
         //
         //
+        /* //Commented out
         testSimpleDataGridView();
 
         testVisibilityHandler(PWindow.getMain());
@@ -255,11 +264,12 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         window.open();
 
         PWindow.getMain().add(Element.newA());
+        */
 
         // PWindow.getMain().add(new PHistory());
         // PWindow.getMain().add(new PNotificationManager());
         // PWindow.getMain().add(new PSuggestBox());
-
+        /* //Commented out
         PWindow.getMain().add(createBlock(createAbsolutePanel()));
         // PWindow.getMain().add(createPAddOn().asWidget());
         PWindow.getMain().add(Element.newPAnchor());
@@ -337,6 +347,9 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         PWindow.getMain().add(new PToolbar());
         PWindow.getMain().add(createTree());
         PWindow.getMain().add(new PTwinListBox<>());
+        //Commented out 
+        */
+        /* //Commented out 
         PWindow.getMain().add(Element.newPVerticalPanel());
 
         
@@ -362,8 +375,8 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         }
 
         PConfirmDialog.show(PWindow.getMain(), "AAA", Element.newPLabel("AA"));
-
-        POptionPane.showConfirmDialog(PWindow.getMain(), null, "BBB");
+        */
+        //POptionPane.showConfirmDialog(PWindow.getMain(), null, "BBB");
 
         // uiContext.getHistory().newItem("", false);
     }

@@ -487,4 +487,22 @@ public class UIBuilder {
         else log.warning("Frame " + frame + " doesn't exist");
     }
 
+    public void update(BinaryModel model, Object value) {
+        if (model.isDictionaryIndex()) {
+            // Get the value from the dictionary using the index
+            value = dictionary.getValue(model.getDictionaryIndex());
+            if (value == null) {
+                log.warning("Dictionary index " + model.getDictionaryIndex() + " not found");
+                return;
+            }
+        }
+        
+        // Process the update with the actual value
+        processUpdate(model.getModel(), value);
+    }
+
+    private void processUpdate(ServerToClientModel model, Object value) {
+        // ... existing update processing code ...
+    }
+
 }
