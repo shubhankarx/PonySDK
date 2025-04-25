@@ -26,6 +26,8 @@ package com.ponysdk.core.terminal.socket;
 import com.ponysdk.core.model.ServerToClientModel;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -36,8 +38,11 @@ import java.util.stream.Collectors;
 public class ClientModelTracker {
     private static final Logger log = Logger.getLogger(ClientModelTracker.class.getName());
     
-    private final Map<ModelValueKey, Integer> dictionary;
+    private final Map<ModelValueKey, Integer> dictionary = new ConcurrentHashMap<>();
     private final int frequencyThreshold;
+    private final Map<ModelValueKey, String> keyMap = new ConcurrentHashMap<>();
+    private final Map<String, Object> valueMap = new ConcurrentHashMap<>();
+    private final AtomicInteger keyCounter = new AtomicInteger(0);
     
     public ClientModelTracker() {
         this(100); // Default threshold of 100
@@ -47,7 +52,6 @@ public class ClientModelTracker {
         if (frequencyThreshold <= 0) {
             throw new IllegalArgumentException("Frequency threshold must be positive");
         }
-        this.dictionary = new HashMap<>();
         this.frequencyThreshold = frequencyThreshold;
     }
     
@@ -152,6 +156,9 @@ public class ClientModelTracker {
      */
     public void clear() {
         dictionary.clear();
+        keyMap.clear();
+        valueMap.clear();
+        keyCounter.set(0);
         log.info("Dictionary cleared");
     }
     
@@ -188,5 +195,34 @@ public class ClientModelTracker {
 
     public Map<ModelValueKey, Integer> getAllTrackedPatterns() {
         return new HashMap<>(dictionary);
+    }
+
+    public Object getValue(int index) {
+        for (Map.Entry<ModelValueKey, Integer> entry : dictionary.entrySet()) {
+            if (entry.getValue() == index) {
+                return entry.getKey().getValue();
+            }
+        }
+        return null;
+    }
+
+    public String recordAndGetKey(ServerToClientModel model, Object value) {
+        if (model == null) return null;
+        
+        ModelValueKey key = new ModelValueKey(model, value);
+        String dictionaryKey = keyMap.get(key);
+        
+        if (dictionaryKey == null) {
+            // Generate new key using same format as server
+            dictionaryKey = "k" + keyCounter.getAndIncrement();
+            keyMap.put(key, dictionaryKey);
+            valueMap.put(dictionaryKey, value);
+        }
+        
+        return dictionaryKey;
+    }
+
+    public Object getValueForKey(String key) {
+        return valueMap.get(key);
     }
 }

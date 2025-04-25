@@ -20,6 +20,9 @@ public class SimpleModelTracker {
     private final Map<ModelValueKey, AtomicInteger> frequencyMap = new ConcurrentHashMap<>();
     private final Map<ModelValueKey, Integer> dictionaryIndices = new ConcurrentHashMap<>();
     private final AtomicInteger nextIndex = new AtomicInteger(0);
+    private final Map<ModelValueKey, String> keyMap = new ConcurrentHashMap<>();
+    private final Map<String, Object> valueMap = new ConcurrentHashMap<>();
+    private final AtomicInteger keyCounter = new AtomicInteger(0);
     
     /**
      * Records a model-value pair in the dictionary.
@@ -106,6 +109,10 @@ public class SimpleModelTracker {
      */
     public void clear() {
         frequencyMap.clear();
+        dictionaryIndices.clear();
+        keyMap.clear();
+        valueMap.clear();
+        keyCounter.set(0);
         log.info("SimpleModelTracker dictionary cleared");
     }
     
@@ -114,5 +121,25 @@ public class SimpleModelTracker {
      */
     public Map<ModelValueKey, AtomicInteger> getFrequencyMap() {
         return frequencyMap;
+    }
+
+    public String recordAndGetKey(ServerToClientModel model, Object value) {
+        if (model == null) return null;
+        
+        ModelValueKey key = new ModelValueKey(model, value);
+        String dictionaryKey = keyMap.get(key);
+        
+        if (dictionaryKey == null) {
+            // Generate new key
+            dictionaryKey = "k" + keyCounter.getAndIncrement();
+            keyMap.put(key, dictionaryKey);
+            valueMap.put(dictionaryKey, value);
+        }
+        
+        return dictionaryKey;
+    }
+
+    public Object getValueForKey(String key) {
+        return valueMap.get(key);
     }
 }

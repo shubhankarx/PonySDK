@@ -1,31 +1,37 @@
-private ServerToClientModel model;
-private Object value;
-private int dictionaryIndex = -1; // -1 means no dictionary index
+package com.ponysdk.core.terminal;
 
-public ServerToClientModel getModel() {
-    return model;
-}
+import com.ponysdk.core.model.ServerToClientModel;
 
-public void setModel(ServerToClientModel model) {
-    this.model = model;
-}
+public class BinaryModel {
+    private ServerToClientModel model;
+    private Object value;
+    private int dictionaryIndex = -1; // -1 means no dictionary index
 
-public Object getValue() {
-    return value;
-}
+    public ServerToClientModel getModel() {
+        return model;
+    }
 
-public void setValue(Object value) {
-    this.value = value;
-}
+    public void setModel(ServerToClientModel model) {
+        this.model = model;
+    }
 
-public int getDictionaryIndex() {
-    return dictionaryIndex;
-}
+    public Object getValue() {
+        return value;
+    }
 
-public void setDictionaryIndex(int dictionaryIndex) {
-    this.dictionaryIndex = dictionaryIndex;
-}
+    public void setValue(Object value) {
+        this.value = value;
+    }
 
-public boolean isDictionaryIndex() {
-    return dictionaryIndex != -1;
+    public int getDictionaryIndex() {
+        return dictionaryIndex;
+    }
+
+    public void setDictionaryIndex(int dictionaryIndex) {
+        this.dictionaryIndex = dictionaryIndex;
+    }
+
+    public boolean isDictionaryIndex() {
+        return dictionaryIndex != -1;
+    }
 } 

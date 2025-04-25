@@ -352,61 +352,22 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         try {
-            // Record in dictionary if enabled
             if (dictionaryEnabled) {
-                modelTracker.record(model, value);
-                
-                // Check if this value is frequent enough to use dictionary index
-                int frequency = modelTracker.getFrequency(model, value);
-                if (frequency >= 100) { // Threshold for using dictionary index
-                    int index = modelTracker.getDictionaryIndex(model, value);
-                    if (index != -1) {
-                        // Send dictionary index instead of actual value
-                        
-                        sendDictionaryIndex(model, index);
-                        return;
-                    }
+                // Record in dictionary and get the key
+                String key = modelTracker.recordAndGetKey(model, value);
+                if (key != null) {
+                    // Send the dictionary key instead of the value
+                    websocketPusher.encode(model, key);
+                    return;
                 }
             }
-
-            // If not using dictionary, send actual value
-            sendValue(model, value);
+            
+            // Fallback to sending actual value if no dictionary key available
+            websocketPusher.encode(model, value);
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
         }
-    }
-
-    private void sendDictionaryIndex(ServerToClientModel model, int index) {
-        // Create a special message type for dictionary indices
-        BinaryModel binaryModel = new BinaryModel();
-        binaryModel.setModel(model);
-        binaryModel.setDictionaryIndex(index);
-        send(binaryModel);
-    }
-
-    private void sendValue(ServerToClientModel model, Object value) {
-        if (model == null) return;
-        
-        // Record in dictionary if enabled
-        if (dictionaryEnabled) {
-            modelTracker.record(model, value);
-            
-            // Check if this value is frequent enough to use dictionary index
-            int frequency = modelTracker.getFrequency(model, value);
-            if (frequency >= 100) { // Threshold for using dictionary index
-                int index = modelTracker.getDictionaryIndex(model, value);
-                if (index != -1) {
-                    // Send dictionary index instead of actual value
-                    sendDictionaryIndex(model, index);
-                    return;
-                }
-            }
-        }
-        
-        // Fallback to sending actual value
-        websocketPusher.encode(model, value);
-        if (listener != null) listener.onOutgoingPonyFrame(model, value);
     }
 
     /**
