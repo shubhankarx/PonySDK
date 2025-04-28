@@ -43,6 +43,9 @@ public class ClientModelTracker {
     private final Map<ModelValueKey, String> keyMap = new ConcurrentHashMap<>();
     private final Map<String, Object> valueMap = new ConcurrentHashMap<>();
     private final AtomicInteger keyCounter = new AtomicInteger(0);
+    // New: Added this field with other fields (we already have valueMap)
+    private final Map<Integer, String> indexToKeyMap = new ConcurrentHashMap<>();
+
     
     public ClientModelTracker() {
         this(100); // Default threshold of 100
@@ -221,6 +224,25 @@ public class ClientModelTracker {
         
         return dictionaryKey;
     }
+
+    /**
+     * Handle dictionary update from server
+     */
+    public void handleDictUpdate(int index, String dictKey, Object value) {
+        if (value == null) return;
+        
+        valueMap.put(dictKey, value);
+        indexToKeyMap.put(index, dictKey);
+    }
+
+    /**
+     * Get value by dictionary index
+     */
+    public Object getValueByIndex(int index) {
+        String key = indexToKeyMap.get(index);
+        return key == null ? null : valueMap.get(key);
+    }
+
 
     public Object getValueForKey(String key) {
         return valueMap.get(key);

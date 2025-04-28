@@ -462,61 +462,80 @@ public class UIBuilder {
         else log.warning("Frame " + frame + " doesn't exist");
     }
 
+    //New: Updated    
     private void processUpdateWithDictionary(BinaryModel binaryModel, ReaderBuffer buffer) {
         final ServerToClientModel model = binaryModel.getModel();
-        Object value = null;
-
-        // Extract value based on model type
-        switch (model.getTypeModel()) {
-            case STRING:
-                value = binaryModel.getStringValue();
-                break;
-            case INTEGER:
-            case UINT31:
-                value = binaryModel.getIntValue();
-                break;
-            case BOOLEAN:
-                value = binaryModel.getBooleanValue();
-                break;
-            case DOUBLE:
-                value = binaryModel.getDoubleValue();
-                break;
-            case FLOAT:
-                value = binaryModel.getFloatValue();
-                break;
-            case LONG:
-                value = binaryModel.getLongValue();
-                break;
-            case ARRAY:
-                value = binaryModel.getArrayValue();
-                break;
-            default:
-                log.warning("Unknown model type: " + model.getTypeModel());
-                return;
+        
+        // 1. Handle dictionary updates
+        if (ServerToClientModel.DICT_UPDATE == model) {
+            int index = buffer.readBinaryModel().getIntValue();
+            String key = buffer.readBinaryModel().getStringValue();
+            BinaryModel valueModel = buffer.readBinaryModel();
+            Object value = extractValue(valueModel);
+            modelTracker.handleDictUpdate(index, key, value);
+            buffer.readBinaryModel(); // END marker
+            return;
         }
+        
+        // 2. Handle dictionary value lookup
+        if (ServerToClientModel.DICT_VALUE_INDEX == model) {
+            int index = binaryModel.getIntValue();
+            Object value = modelTracker.getValueByIndex(index);
+            if (value == null) {
+                log.warning("Dictionary lookup failed for index: " + index);
+                buffer.shiftNextBlock(false);
+                return;
+            }
+            
+            // Next model contains the operation type
+            BinaryModel opModel = buffer.readBinaryModel();
+            dispatchOperation(opModel.getModel(), value, buffer);
+            return;
+        }
+        
+        // 3. Normal flow - extract value and dispatch
+        Object value = extractValue(binaryModel);
+        dispatchOperation(model, value, buffer);
+    }
 
+    // New: Helper method - extract value from model
+    private Object extractValue(BinaryModel binaryModel) {
+        switch (binaryModel.getModel().getTypeModel()) {
+            case STRING:  return binaryModel.getStringValue();
+            case INTEGER: case UINT31:  return binaryModel.getIntValue();
+            case BOOLEAN: return binaryModel.getBooleanValue();
+            case DOUBLE:  return binaryModel.getDoubleValue();
+            case FLOAT:   return binaryModel.getFloatValue();
+            case LONG:    return binaryModel.getLongValue();
+            case ARRAY:   return binaryModel.getArrayValue();
+            default: return null;
+        }
+    }
+
+    // New: Helper method - dispatch based on operation type
+    private void dispatchOperation(ServerToClientModel model, Object value, ReaderBuffer buffer) {
         try {
             if (ServerToClientModel.TYPE_CREATE == model) {
-                processCreate(buffer, binaryModel.getIntValue());
+                processCreate(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_UPDATE == model) {
-                processUpdate(buffer, binaryModel.getIntValue());
+                processUpdate(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_ADD == model) {
-                processAdd(buffer, binaryModel.getIntValue());
+                processAdd(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_GC == model) {
-                processGC(buffer, binaryModel.getIntValue());
+                processGC(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_REMOVE == model) {
-                processRemove(buffer, binaryModel.getIntValue());
+                processRemove(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_ADD_HANDLER == model) {
-                processAddHandler(buffer, binaryModel.getIntValue());
+                processAddHandler(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_REMOVE_HANDLER == model) {
-                processRemoveHandler(buffer, binaryModel.getIntValue());
+                processRemoveHandler(buffer, (Integer)value);
             } else if (ServerToClientModel.TYPE_HISTORY == model) {
-                processHistory(buffer, binaryModel.getStringValue());
+                processHistory(buffer, (String)value);
             } else {
-                log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
+                log.warning("Unknown instruction: " + model);
                 if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
             }
-        } catch (final Exception e) {
+        } catch (Exception e) {
             if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
             sendExceptionMessageToServer(e);
         }

@@ -3116,3 +3116,21 @@
 [2025-04-24T13:10:55.169+0200][4205.458s][info ][safepoint    ] Entering safepoint region: Cleanup
 [2025-04-24T13:10:55.169+0200][4205.458s][info ][safepoint    ] Leaving safepoint region
 [2025-04-24T13:10:55.169+0200][4205.458s][info ][safepoint    ] Total time for which application threads were stopped: 0.0004008 seconds, Stopping threads took: 0.0001240 seconds
+[2025-04-25T11:29:06.887+0200][23042.066s][info ][safepoint    ] Application time: 18836.6072055 seconds
+[2025-04-25T11:29:06.888+0200][23042.066s][info ][safepoint    ] Entering safepoint region: RevokeBias
+[2025-04-25T11:29:06.891+0200][23042.069s][info ][safepoint    ] Leaving safepoint region
+[2025-04-25T11:29:06.891+0200][23042.069s][info ][safepoint    ] Total time for which application threads were stopped: 0.0036470 seconds, Stopping threads took: 0.0003673 seconds
+[2025-04-25T11:29:06.900+0200][23042.078s][info ][safepoint    ] Application time: 0.0088301 seconds
+[2025-04-25T11:29:06.900+0200][23042.078s][info ][safepoint    ] Entering safepoint region: RevokeBias
+[2025-04-25T11:29:06.900+0200][23042.078s][info ][safepoint    ] Leaving safepoint region
+[2025-04-25T11:29:06.900+0200][23042.078s][info ][safepoint    ] Total time for which application threads were stopped: 0.0000366 seconds, Stopping threads took: 0.0000097 seconds
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ] Heap
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]  par new generation   total 6912000K, used 1549542K [0x00000005c0000000, 0x0000000794c00000, 0x0000000794c00000)
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]   eden space 6144000K,  25% used [0x00000005c0000000, 0x000000061dc00578, 0x0000000737000000)
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]   from space 768000K,   1% used [0x0000000765e00000, 0x0000000766b39510, 0x0000000794c00000)
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]   to   space 768000K,   0% used [0x0000000737000000, 0x0000000737000000, 0x0000000765e00000)
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]  concurrent mark-sweep generation total 708608K, used 0K [0x0000000794c00000, 0x00000007c0000000, 0x00000007c0000000)
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]  Metaspace       used 34748K, capacity 35358K, committed 35440K, reserved 1081344K
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][gc,heap,exit ]   class space    used 3911K, capacity 4166K, committed 4224K, reserved 1048576K
+[2025-04-25T11:29:06.907+0200][23042.085s][info ][safepoint    ] Application time: 0.0070382 seconds
+[2025-04-25T11:29:06.907+0200][23042.086s][info ][safepoint    ] Entering safepoint region: Exit
