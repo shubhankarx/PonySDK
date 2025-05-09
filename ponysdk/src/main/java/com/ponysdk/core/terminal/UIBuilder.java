@@ -59,7 +59,7 @@ public class UIBuilder {
     private final MapFromIntTo<PTObject> objectByID = Collections.mapFromIntTo();
     private final Map<UIObject, Integer> objectIDByWidget = new HashMap<>();
     private final MapFromIntTo<UIObject> widgetIDByObjectID = Collections.mapFromIntTo();
-    private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();  
+    private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();
 
     private final ReaderBuffer readerBuffer = new ReaderBuffer();
 
@@ -68,6 +68,8 @@ public class UIBuilder {
     private int currentWindowId = -1;
 
     private long lastReceivedMessage;
+
+    private final com.ponysdk.core.terminal.socket.ClientModelTracker modelTracker = new com.ponysdk.core.terminal.socket.ClientModelTracker();
 
     public void init(final RequestBuilder requestBuilder) {
         if (log.isLoggable(Level.INFO)) log.info("Init graphical system");
@@ -98,7 +100,6 @@ public class UIBuilder {
             final int nextBlockPosition = readerBuffer.shiftNextBlock(true);
             if (nextBlockPosition == ReaderBuffer.NOT_FULL_BUFFER_POSITION) return;
 
-            // Detect if the message is not for the main terminal but for a specific window
             final BinaryModel binaryModel = readerBuffer.readBinaryModel();
             final ServerToClientModel model = binaryModel.getModel();
 
@@ -116,8 +117,15 @@ public class UIBuilder {
             } else if (ServerToClientModel.DESTROY_CONTEXT == model) {
                 destroy();
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
+            /*    
             } else if (ServerToClientModel.HEARTBEAT == model) {
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
+                // send heartbeat back so the server knows the client is still alive
+                final PTInstruction hb = new PTInstruction();
+                hb.put(ClientToServerModel.HEARTBEAT_REQUEST, true);
+                requestBuilder.send(hb);
+                continue; // skip default processing
+            */    
             } else {
                 final int oldCurrentWindowId = currentWindowId;
                 if (ServerToClientModel.WINDOW_ID == model) currentWindowId = binaryModel.getIntValue();
@@ -133,7 +141,7 @@ public class UIBuilder {
                         final PTFrame frame = (PTFrame) getPTObject(frameId);
                         frame.postMessage(readerBuffer.slice(readerBuffer.getPosition(), nextBlockPosition));
                     } else {
-                        update(binaryModel, readerBuffer);
+                        processUpdateWithDictionary(binaryModel2, readerBuffer);
                     }
                 } else {
                     if (ServerToClientModel.WINDOW_ID != model) readerBuffer.rewind(binaryModel);
@@ -197,33 +205,7 @@ public class UIBuilder {
     }
 
     private void update(final BinaryModel binaryModel, final ReaderBuffer buffer) {
-        final ServerToClientModel model = binaryModel.getModel();
-
-        try {
-            if (ServerToClientModel.TYPE_CREATE == model) {
-                processCreate(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_UPDATE == model) {
-                processUpdate(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_ADD == model) {
-                processAdd(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_GC == model) {
-                processGC(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_REMOVE == model) {
-                processRemove(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_ADD_HANDLER == model) {
-                processAddHandler(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_REMOVE_HANDLER == model) {
-                processRemoveHandler(buffer, binaryModel.getIntValue());
-            } else if (ServerToClientModel.TYPE_HISTORY == model) {
-                processHistory(buffer, binaryModel.getStringValue());
-            } else {
-                log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
-                if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
-            }
-        } catch (final Exception e) {
-            if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
-            sendExceptionMessageToServer(e);
-        }
+        processUpdateWithDictionary(binaryModel, buffer);
     }
 
     private void processCreate(final ReaderBuffer buffer, final int objectID) {
@@ -485,6 +467,87 @@ public class UIBuilder {
         final PTFrame frame = (PTFrame) getPTObject(frameID);
         if (frame != null) frame.setReady();
         else log.warning("Frame " + frame + " doesn't exist");
+    }
+
+    //New: Updated    
+    private void processUpdateWithDictionary(BinaryModel binaryModel, ReaderBuffer buffer) {
+        final ServerToClientModel model = binaryModel.getModel();
+        
+        // 1. Handle dictionary updates
+        if (ServerToClientModel.DICT_UPDATE == model) {
+            int index = buffer.readBinaryModel().getIntValue();
+            String dictKey = buffer.readBinaryModel().getStringValue();
+            BinaryModel opModelBin = buffer.readBinaryModel();
+            ServerToClientModel opModel = opModelBin.getModel();
+            Object opValue = extractValue(opModelBin);
+            log.info("DICT_UPDATE: index=" + index + ", key=" + dictKey + ", model=" + opModel + ", value=" + opValue);
+            modelTracker.handleDictUpdate(index, dictKey, opValue);
+            dispatchOperation(opModel, opValue, buffer);
+            return;
+        }
+        
+        // 2. Handle dictionary value lookup
+        if (ServerToClientModel.DICT_VALUE_INDEX == model) {
+            int index = binaryModel.getIntValue();
+            Object value = modelTracker.getValueByIndex(index);
+            BinaryModel opModelBin = buffer.readBinaryModel();
+            ServerToClientModel opModel = opModelBin.getModel();
+            log.info("DICT_VALUE_INDEX: index=" + index + ", model=" + opModel + ", value=" + value);
+            if (value == null) {
+                log.warning("Dictionary lookup failed for index: " + index);
+                buffer.shiftNextBlock(false);
+                return;
+            }
+            dispatchOperation(opModel, value, buffer);
+            return;
+        }
+        
+        // 3. Normal flow - extract value and dispatch
+        Object value = extractValue(binaryModel);
+        dispatchOperation(model, value, buffer);
+    }
+
+    // New: Helper method - extract value from model
+    private Object extractValue(BinaryModel binaryModel) {
+        switch (binaryModel.getModel().getTypeModel()) {
+            case STRING:  return binaryModel.getStringValue();
+            case INTEGER: case UINT31:  return binaryModel.getIntValue();
+            case BOOLEAN: return binaryModel.getBooleanValue();
+            case DOUBLE:  return binaryModel.getDoubleValue();
+            case FLOAT:   return binaryModel.getFloatValue();
+            case LONG:    return binaryModel.getLongValue();
+            case ARRAY:   return binaryModel.getArrayValue();
+            default: return null;
+        }
+    }
+
+    // New: Helper method - dispatch based on operation type
+    private void dispatchOperation(ServerToClientModel model, Object value, ReaderBuffer buffer) {
+        try {
+            if (ServerToClientModel.TYPE_CREATE == model) {
+                processCreate(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_UPDATE == model) {
+                processUpdate(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_ADD == model) {
+                processAdd(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_GC == model) {
+                processGC(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_REMOVE == model) {
+                processRemove(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_ADD_HANDLER == model) {
+                processAddHandler(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_REMOVE_HANDLER == model) {
+                processRemoveHandler(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_HISTORY == model) {
+                processHistory(buffer, (String)value);
+            } else {
+                log.warning("Unknown instruction: " + model);
+                if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+            }
+        } catch (Exception e) {
+            if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+            sendExceptionMessageToServer(e);
+        }
     }
 
 }

@@ -25,9 +25,9 @@ package com.ponysdk.core.server.websocket;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -73,13 +73,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     private long lastSentPing;
 
-    // Dictionary for optimizing repetitive message patterns
-    private final ModelValueDictionary dictionary = new ModelValueDictionary();
-    // Current batch of model-value pairs for pattern detection
-    private final List<ModelValuePair> currentBatch = new ArrayList<>();
-    // Threshold for considering model-value sequences as a batch
-    private static final int BATCH_SIZE_THRESHOLD = 4;
-
+    // New Lines
+    private final SimpleModelTracker modelTracker = new SimpleModelTracker();
+    private boolean dictionaryEnabled = true; // Default to enabled to restore prior behavior
 
 
     public WebSocket() {
@@ -124,6 +120,21 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
+            // New Line: Schedule periodic dictionary printing (every 10 seconds)
+            new Thread(() -> {
+                try {
+                    while (isAlive() && isSessionOpen()) {
+                        Thread.sleep(10000);
+                        if (dictionaryEnabled) {
+                            //printDictionary();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
+            
+
         } catch (final Exception e) {
             log.error("Cannot process WebSocket instructions", e);
         }
@@ -185,9 +196,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 if (monitor != null) monitor.onMessageUnprocessed(this, message);
             }
         } else {
-                log.info("UI Context #{} is destroyed, message dropped from terminal : {}", uiContext != null ? uiContext.getID() : -1,
-                        message);
-            }
+            log.info("UI Context #{} is destroyed, message dropped from terminal : {}", uiContext != null ? uiContext.getID() : -1,
+                    message);
+        }
     }
 
     private void processRoundtripLatency(final JsonObject jsonObject) {
@@ -326,50 +337,25 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     public void endObject() {
         encode(ServerToClientModel.END, null);
     }
-    
 
-    
-    // Flag to enable/disable dictionary compression
-    private boolean dictionaryEnabled = true;
-
-    /**
-     * Encodes a model-value pair for transmission to the client.
-     * If dictionary optimization is enabled, pairs are batched and
-     * compared against known patterns before transmission.
-     *
-     * @param model the model enumeration value
-     * @param value the value associated with the model
-     */
     @Override
     public void encode(final ServerToClientModel model, final Object value) {
-        // Record for dictionary if enabled
-        if (dictionaryEnabled) {
-            currentBatch.add(new ModelValuePair(model, value));
-            
-            // Process batch if it's an END instruction or threshold reached
-            if (model == ServerToClientModel.END || currentBatch.size() >= BATCH_SIZE_THRESHOLD) {
-                processBatch();
-                return; // Skip original encode since processBatch handled it
+        if (ServerToClientModel.END == model
+                || ServerToClientModel.DICT_UPDATE == model
+                || ServerToClientModel.DICT_VALUE_INDEX == model) {
+            try {
+                websocketPusher.encode(model, value);
+            } catch (IOException e) {
+                log.error("Error encoding control message for UIContext #{}", uiContext.getID(), e);
+                uiContext.onDestroy();
             }
+            return;
         }
-        
-        // Original encode logic for non-batched or when dictionary is disabled
-        encodeDirectly(model, value);
-    }
-
-    /**
-     * Direct encoding implementation without dictionary optimization.
-     * Ensures proper UI context acquisition and error handling.
-     * 
-     * @param model the model enumeration value
-     * @param value the value associated with the model
-     */
-    private void encodeDirectly(final ServerToClientModel model, final Object value) {
         if (UIContext.get() == null) {
             log.warn("encode in websocket without current ui context acquired", new Exception());
             uiContext.acquire();
             try {
-                encodeDirectly(model, value);
+                encode(model, value);
             } finally {
                 uiContext.release();
             }
@@ -377,10 +363,34 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         try {
-            if (loggerOut.isTraceEnabled())
-                loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
+            if (dictionaryEnabled) {
+                modelTracker.record(model, value);
+                int idx = modelTracker.getDictionaryIndex(model, value);
+                if (idx >= 0) {
+                    int freq = modelTracker.getFrequency(model, value);
+                    // 2a) first hit at threshold: send index, key, and full payload
+                    if (freq == SimpleModelTracker.FREQUENCY_THRESHOLD) {
+                        String dictKey = modelTracker.recordAndGetKey(model, value);
+                        log.info("Sending DICT_UPDATE: index=" + idx + ", dictKey=" + dictKey + ", model=" + model + ", value=" + value);
+                        beginObject();
+                        websocketPusher.encode(ServerToClientModel.DICT_UPDATE, idx);
+                        websocketPusher.encode(ServerToClientModel.DICT_UPDATE, dictKey);
+                        websocketPusher.encode(model, value);
+                        endObject();
+                        return;
+                    }
+                    // 2b) subsequent repeats: send index and full payload
+                    log.info("Sending DICT_VALUE_INDEX: index=" + idx + ", model=" + model + ", value=" + value);
+                    beginObject();
+                    websocketPusher.encode(ServerToClientModel.DICT_VALUE_INDEX, idx);
+                    websocketPusher.encode(model, value);
+                    endObject();
+                    return;
+                }
+            }
+
+            // Fallback: send raw model and value
             websocketPusher.encode(model, value);
-            if (listener != null) listener.onOutgoingPonyFrame(model, value);
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
@@ -388,67 +398,35 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     }
 
     /**
-     * Processes the current batch of model-value pairs for potential dictionary optimization.
-     * If the batch matches a known pattern, sends a reference instead of the full content.
-     * Otherwise records the pattern for future optimization and sends full content.
+     * Enables or disables the dictionary tracking.
+     * 
+     * @param enabled True to enable, false to disable
      */
-    private void processBatch() {
-        if (currentBatch.isEmpty()) return;
-        
-        // Check if batch is eligible for dictionary
-        if (currentBatch.size() >= 2) {
-            Integer patternId = dictionary.getPatternId(currentBatch);
-            
-            if (patternId != null) {
-                // Send reference to pattern instead of full data
-                encodeDirectly(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
-                currentBatch.clear();
-                return;
-            }
-            
-            // Record this pattern for future use
-            dictionary.recordPattern(new ArrayList<>(currentBatch));
+    public void setDictionaryEnabled(boolean enabled) {
+        this.dictionaryEnabled = enabled;
+        if (enabled) {
+            log.info("Dictionary tracking enabled");
+        } else {
+            log.info("Dictionary tracking disabled");
         }
-        
-        // Send all pairs in the batch
-        for (ModelValuePair pair : currentBatch) {
-            encodeDirectly(pair.getModel(), pair.getValue());
-        }
-        currentBatch.clear();
     }
 
     /**
-     * Handles client requests for dictionary pattern definitions.
-     * When a client receives a reference to an unknown pattern,
-     * it can request the full pattern definition.
+     * Checks if dictionary tracking is enabled.
      * 
-     * @param patternId the ID of the requested pattern
+     * @return True if enabled, false otherwise
      */
-    public void handleDictionaryRequest(final int patternId) {
-        List<ModelValuePair> pattern = dictionary.getPattern(patternId);
-        if (pattern == null) {
-            log.warn("Dictionary pattern not found: {}", patternId);
-            return;
-        }
-        
-        encodeDirectly(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
-        for (ModelValuePair pair : pattern) {
-            encodeDirectly(pair.getModel(), pair.getValue());
-        }
-        encodeDirectly(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+    public boolean isDictionaryEnabled() {
+        return dictionaryEnabled;
     }
-    
+
     /**
-     * Enables or disables dictionary-based compression.
-     * When disabled, all model-value pairs are sent directly.
+     * Gets the model tracker dictionary.
      * 
-     * @param enabled true to enable dictionary compression, false to disable
+     * @return The SimpleModelTracker instance
      */
-    public void setDictionaryEnabled(final boolean enabled) {
-        this.dictionaryEnabled = enabled;
-        if (!enabled) {
-            currentBatch.clear();
-        }
+    public SimpleModelTracker getModelTracker() {
+        return modelTracker;
     }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
@@ -463,6 +441,29 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             log.error("Cannot send UI component to client for UIContext #{}", uiContext.getID(), e);
         }
     }
+
+        /**
+     * Prints dictionary contents to stdout (minimal approach)
+     */
+    private void printDictionary() {
+        System.out.println("\n=== DICTIONARY CONTENTS ===");
+        System.out.println("Dictionary enabled: " + dictionaryEnabled);
+        System.out.println("Unique entries: " + modelTracker.getUniqueCount());
+        
+        Map<ModelValueKey, Integer> counts = modelTracker.getMostFrequent(20);
+        if (!counts.isEmpty()) {
+            System.out.println("\nTop 20 most frequent entries:");
+            int rank = 1;
+            for (Map.Entry<ModelValueKey, Integer> entry : counts.entrySet()) {
+                System.out.println(rank++ + ". " + entry.getKey() + " = " + entry.getValue() + " occurrences");
+            }
+        } else {
+            System.out.println("No entries in dictionary yet");
+        }
+        System.out.println("============================\n");
+    }
+
+
 
     private enum NiceStatusCode {
 
