@@ -32,6 +32,7 @@ import elemental.json.JsonObject;
 
 public class BinaryModel {
 
+    private int dictionaryIndex = -1;
     private ServerToClientModel model;
     private int size;
 
@@ -143,5 +144,7 @@ public class BinaryModel {
         else if (ValueTypeModel.ARRAY == typeModel) return model + " => " + arrayValue;
         else throw new IllegalArgumentException("No model type configured : " + typeModel);
     }
+
+    
 
 }

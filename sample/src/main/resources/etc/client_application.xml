@@ -9,4 +9,15 @@ http://www.springframework.org/schema/task http://www.springframework.org/schema
 
 	<bean name="entryPoint" class="com.ponysdk.sample.client.UISampleEntryPoint" />
 
+	<bean name="uiBuilder" class="com.ponysdk.core.terminal.UIBuilder" />
+
+	<bean name="reconnectionChecker" class="com.ponysdk.core.terminal.ReconnectionChecker" />
+
+	<bean name="websocketClient" class="com.ponysdk.core.terminal.socket.WebSocketClient">
+		<constructor-arg value="ws://localhost:8080/ws" />
+		<constructor-arg ref="uiBuilder" />
+		<property name="url" value="ws://localhost:8080/ws"/>
+		<property name="uiBuilder" ref="uiBuilder"/>
+	</bean>
+
 </beans>

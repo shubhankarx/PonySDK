@@ -78,6 +78,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private boolean dictionaryEnabled = true; // Default to enabled to restore prior behavior
 
 
+    // New Lines
+    private final SimpleModelTracker modelTracker = new SimpleModelTracker();
+    private boolean dictionaryEnabled = true; // Default to disabled to avoid affecting existing behavior
+
+
     public WebSocket() {
     }
 
@@ -120,6 +125,21 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
+            // New Line: Schedule periodic dictionary printing (every 10 seconds)
+            new Thread(() -> {
+                try {
+                    while (isAlive() && isSessionOpen()) {
+                        Thread.sleep(10000);
+                        if (dictionaryEnabled) {
+                            //printDictionary();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }).start();
+            
+
             // New Line: Schedule periodic dictionary printing (every 10 seconds)
             new Thread(() -> {
                 try {
@@ -428,6 +448,37 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     public SimpleModelTracker getModelTracker() {
         return modelTracker;
     }
+    /**
+     * Enables or disables the dictionary tracking.
+     * 
+     * @param enabled True to enable, false to disable
+     */
+    public void setDictionaryEnabled(boolean enabled) {
+        this.dictionaryEnabled = enabled;
+        if (enabled) {
+            log.info("Dictionary tracking enabled");
+        } else {
+            log.info("Dictionary tracking disabled");
+        }
+    }
+
+    /**
+     * Checks if dictionary tracking is enabled.
+     * 
+     * @return True if enabled, false otherwise
+     */
+    public boolean isDictionaryEnabled() {
+        return dictionaryEnabled;
+    }
+
+    /**
+     * Gets the model tracker dictionary.
+     * 
+     * @return The SimpleModelTracker instance
+     */
+    public SimpleModelTracker getModelTracker() {
+        return modelTracker;
+    }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
         try {
@@ -441,6 +492,29 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             log.error("Cannot send UI component to client for UIContext #{}", uiContext.getID(), e);
         }
     }
+
+        /**
+     * Prints dictionary contents to stdout (minimal approach)
+     */
+    private void printDictionary() {
+        System.out.println("\n=== DICTIONARY CONTENTS ===");
+        System.out.println("Dictionary enabled: " + dictionaryEnabled);
+        System.out.println("Unique entries: " + modelTracker.getUniqueCount());
+        
+        Map<ModelValueKey, Integer> counts = modelTracker.getMostFrequent(20);
+        if (!counts.isEmpty()) {
+            System.out.println("\nTop 20 most frequent entries:");
+            int rank = 1;
+            for (Map.Entry<ModelValueKey, Integer> entry : counts.entrySet()) {
+                System.out.println(rank++ + ". " + entry.getKey() + " = " + entry.getValue() + " occurrences");
+            }
+        } else {
+            System.out.println("No entries in dictionary yet");
+        }
+        System.out.println("============================\n");
+    }
+
+
 
         /**
      * Prints dictionary contents to stdout (minimal approach)

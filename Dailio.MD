@@ -107,4 +107,223 @@ Day 8 14/4/25
 With Mathieu, we start discussing today. We can discuss code, and practice more ideas.
 We decided to take the step back and complete the hashing system.
 So rather than having the complicated system now, we change it.
+Trainings with Mathieu: Trading overview, training presentation and foundation and code review.
 
+Day 9 15/4/25
+We had training on learning about Smart Trade systems, especially for Trainees. Like Front end training with Nathan.
+
+Day 10 16/4/25
+
+I worked on implementing and adding the fresh version of dictionary, 
+
+Training tools and managed services and scenario runner.
+
+Day 11 17/4/25
+
+I commented out everything, from the file UI Entry point.
+Which was basically everything in the Start function
+
+
+We discuss during meeting to make the presentation.
+
+Some notes from meeting:
+Not going to byte level bit
+Not encode somehting not to be sent
+Predict next instruction to send
+send some instruction already known
+encode bytes we dont need to sent
+just before encoding to move on at the byte level
+
+10-20 slides expected 
+15-20 without speak alot
+Let people in R&D Know , who we are
+Know Red Line Porject
+Subject + State of the art
+Need Pictures
+
+LLM + Optimization
+Oracle AI
+Q&A
+ 
+Day 12 18/4/25
+
+“Should the client mirror the server’s tracking logic and build its own frequency dictionary from incoming frames, or should the server compute the dictionary once and send that mapping to the client?”
+
+“Alternatively, could we let both sides maintain their own dictionaries independently and occasionally synchronize them to handle drift?”
+
+
+Day 28/4/25
+
+Added changes
+# Complete Dictionary Fix - Step by Step
+
+Based on my review of the codebase, here's a step-by-step fix that minimizes changes while getting your dictionary feature working:
+
+## Step 1: Add missing model values to ServerToClientModel
+
+```java
+
+
+// Add after TYPE_GC but before END
+TYPE_GC(ValueTypeModel.UINT31),
+
+// Dictionary-related models
+DICT_UPDATE(ValueTypeModel.UINT31),        // Signals a dictionary entry update
+DICT_VALUE_INDEX(ValueTypeModel.UINT31),   // Indicates value is sent by dictionary index
+
+END(ValueTypeModel.NULL),
+```
+
+## Step 2: Add missing methods to ClientModelTracker
+
+```java
+
+
+// Add this field after other fields
+private final Map<Integer, String> indexToKeyMap = new ConcurrentHashMap<>();
+// Note: valueMap already exists
+
+/**
+ * Handles a dictionary update from the server
+ */
+public void handleDictUpdate(int index, String key, Object value) {
+    if (value == null) {
+        log.warning("Received null value for dictionary entry: " + index);
+        return;
+    }
+    
+    valueMap.put(key, value);
+    indexToKeyMap.put(index, key);
+    log.fine("Dictionary updated: index=" + index + ", key=" + key + ", value=" + value);
+}
+
+/**
+ * Get a value by its dictionary index
+ */
+public Object getValueByIndex(int index) {
+    String key = indexToKeyMap.get(index);
+    if (key == null) {
+        log.warning("No dictionary key found for index: " + index);
+        return null;
+    }
+    return valueMap.get(key);
+}
+```
+
+## Step 3: Fix processUpdateWithDictionary in UIBuilder
+
+```java
+
+
+// Replace entire method with this implementation
+private void processUpdateWithDictionary(BinaryModel binaryModel, ReaderBuffer buffer) {
+    final ServerToClientModel model = binaryModel.getModel();
+    
+    // Handle dictionary update from server
+    if (ServerToClientModel.DICT_UPDATE == model) {
+        // Format: DICT_UPDATE, INDEX, KEY, VALUE, END
+        int index = buffer.readBinaryModel().getIntValue();
+        String key = buffer.readBinaryModel().getStringValue();
+        BinaryModel valueModel = buffer.readBinaryModel();
+        Object value = extractValue(valueModel);
+        
+        modelTracker.handleDictUpdate(index, key, value);
+        buffer.readBinaryModel(); // Read END
+        return;
+    }
+    
+    // Handle value-by-index reference
+    if (ServerToClientModel.DICT_VALUE_INDEX == model) {
+        int index = binaryModel.getIntValue();
+        Object value = modelTracker.getValueByIndex(index);
+        if (value == null) {
+            log.warning("Dictionary lookup failed for index: " + index);
+            buffer.shiftNextBlock(false);
+            return;
+        }
+        
+        // Read the model type (what kind of instruction this is)
+        binaryModel = buffer.readBinaryModel();
+        dispatchOperation(binaryModel.getModel(), value, buffer);
+        return;
+    }
+    
+    // Extract value based on model type - normal flow
+    Object value = extractValue(binaryModel);
+    dispatchOperation(model, value, buffer);
+}
+
+// New helper method to extract value from BinaryModel
+private Object extractValue(BinaryModel binaryModel) {
+    final ServerToClientModel model = binaryModel.getModel();
+    switch (model.getTypeModel()) {
+        case STRING:  return binaryModel.getStringValue();
+        case INTEGER: 
+        case UINT31:  return binaryModel.getIntValue();
+        case BOOLEAN: return binaryModel.getBooleanValue();
+        case DOUBLE:  return binaryModel.getDoubleValue();
+        case FLOAT:   return binaryModel.getFloatValue();
+        case LONG:    return binaryModel.getLongValue();
+        case ARRAY:   return binaryModel.getArrayValue();
+        default:
+            log.warning("Unknown model type: " + model.getTypeModel());
+            return null;
+    }
+}
+
+// New helper method to dispatch operations
+private void dispatchOperation(ServerToClientModel model, Object value, ReaderBuffer buffer) {
+    try {
+        if (ServerToClientModel.TYPE_CREATE == model) {
+            processCreate(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_UPDATE == model) {
+            processUpdate(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_ADD == model) {
+            processAdd(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_GC == model) {
+            processGC(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_REMOVE == model) {
+            processRemove(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_ADD_HANDLER == model) {
+            processAddHandler(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_REMOVE_HANDLER == model) {
+            processRemoveHandler(buffer, (Integer)value);
+        } else if (ServerToClientModel.TYPE_HISTORY == model) {
+            processHistory(buffer, (String)value);
+        } else {
+            log.warning("Unknown instruction: " + model);
+            if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+        }
+    } catch (Exception e) {
+        if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+        sendExceptionMessageToServer(e);
+    }
+}
+```
+
+## Step 4: Temporarily disable dictionary until testing is complete
+
+```java
+
+
+// Add after requestBuilder = requestBuilder in init() method
+public void init(final RequestBuilder requestBuilder) {
+    if (log.isLoggable(Level.INFO)) log.info("Init graphical system");
+    
+    this.requestBuilder = requestBuilder;
+
+    // Temporarily disable dictionary
+    final PTInstruction requestData = new PTInstruction();
+    requestData.put(ClientToServerModel.DICTIONARY_ENABLED, false);
+    requestBuilder.send(requestData);
+    
+    // Existing code...
+```
+
+These changes:
+1. Add necessary dictionary model values
+2. Add index-to-key lookups in ClientModelTracker
+3. Properly handle dictionary updates in UIBuilder
+4. Keep your UI rendering correctly while testing
+
+Once you confirm everything works, you can remove Step 4 and allow the dictionary compression to work.

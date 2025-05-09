@@ -71,6 +71,8 @@ public class UIBuilder {
 
     private final com.ponysdk.core.terminal.socket.ClientModelTracker modelTracker = new com.ponysdk.core.terminal.socket.ClientModelTracker();
 
+    private final com.ponysdk.core.terminal.socket.ClientModelTracker modelTracker = new com.ponysdk.core.terminal.socket.ClientModelTracker();
+
     public void init(final RequestBuilder requestBuilder) {
         if (log.isLoggable(Level.INFO)) log.info("Init graphical system");
 
@@ -141,6 +143,7 @@ public class UIBuilder {
                         final PTFrame frame = (PTFrame) getPTObject(frameId);
                         frame.postMessage(readerBuffer.slice(readerBuffer.getPosition(), nextBlockPosition));
                     } else {
+                        processUpdateWithDictionary(binaryModel2, readerBuffer);
                         processUpdateWithDictionary(binaryModel2, readerBuffer);
                     }
                 } else {
@@ -499,6 +502,85 @@ public class UIBuilder {
                 return;
             }
             dispatchOperation(opModel, value, buffer);
+            return;
+        }
+        
+        // 3. Normal flow - extract value and dispatch
+        Object value = extractValue(binaryModel);
+        dispatchOperation(model, value, buffer);
+    }
+
+    // New: Helper method - extract value from model
+    private Object extractValue(BinaryModel binaryModel) {
+        switch (binaryModel.getModel().getTypeModel()) {
+            case STRING:  return binaryModel.getStringValue();
+            case INTEGER: case UINT31:  return binaryModel.getIntValue();
+            case BOOLEAN: return binaryModel.getBooleanValue();
+            case DOUBLE:  return binaryModel.getDoubleValue();
+            case FLOAT:   return binaryModel.getFloatValue();
+            case LONG:    return binaryModel.getLongValue();
+            case ARRAY:   return binaryModel.getArrayValue();
+            default: return null;
+        }
+    }
+
+    // New: Helper method - dispatch based on operation type
+    private void dispatchOperation(ServerToClientModel model, Object value, ReaderBuffer buffer) {
+        try {
+            if (ServerToClientModel.TYPE_CREATE == model) {
+                processCreate(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_UPDATE == model) {
+                processUpdate(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_ADD == model) {
+                processAdd(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_GC == model) {
+                processGC(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_REMOVE == model) {
+                processRemove(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_ADD_HANDLER == model) {
+                processAddHandler(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_REMOVE_HANDLER == model) {
+                processRemoveHandler(buffer, (Integer)value);
+            } else if (ServerToClientModel.TYPE_HISTORY == model) {
+                processHistory(buffer, (String)value);
+            } else {
+                log.warning("Unknown instruction: " + model);
+                if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+            }
+        } catch (Exception e) {
+            if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
+            sendExceptionMessageToServer(e);
+        }
+    }
+
+    //New: Updated    
+    private void processUpdateWithDictionary(BinaryModel binaryModel, ReaderBuffer buffer) {
+        final ServerToClientModel model = binaryModel.getModel();
+        
+        // 1. Handle dictionary updates
+        if (ServerToClientModel.DICT_UPDATE == model) {
+            int index = buffer.readBinaryModel().getIntValue();
+            String key = buffer.readBinaryModel().getStringValue();
+            BinaryModel valueModel = buffer.readBinaryModel();
+            Object value = extractValue(valueModel);
+            modelTracker.handleDictUpdate(index, key, value);
+            buffer.readBinaryModel(); // END marker
+            return;
+        }
+        
+        // 2. Handle dictionary value lookup
+        if (ServerToClientModel.DICT_VALUE_INDEX == model) {
+            int index = binaryModel.getIntValue();
+            Object value = modelTracker.getValueByIndex(index);
+            if (value == null) {
+                log.warning("Dictionary lookup failed for index: " + index);
+                buffer.shiftNextBlock(false);
+                return;
+            }
+            
+            // Next model contains the operation type
+            BinaryModel opModel = buffer.readBinaryModel();
+            dispatchOperation(opModel.getModel(), value, buffer);
             return;
         }
         

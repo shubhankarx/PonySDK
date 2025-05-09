@@ -43,6 +43,10 @@ public enum ServerToClientModel {
     TYPE_HISTORY(ValueTypeModel.STRING),
     TYPE_GC(ValueTypeModel.UINT31),
 
+    DICT_UPDATE(ValueTypeModel.UINT31),        // Signals a dictionary entry update
+    DICT_VALUE_INDEX(ValueTypeModel.UINT31),   // Indicates value is sent by dictionary index
+
+    
     NATIVE(ValueTypeModel.STRING),
     DATE(ValueTypeModel.LONG),
     VALUE(ValueTypeModel.STRING),
