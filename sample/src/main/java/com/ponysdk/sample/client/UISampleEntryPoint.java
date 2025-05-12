@@ -147,6 +147,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         final PLabel url = Element.newPLabel(String.valueOf(UIContext.get().getRequest().getParameterMap().get("toto")));
         PWindow.getMain().add(url);
 
+
         // Add a button to test sending custom UI components
         final PButton testButton = Element.newPButton("Send Custom UI Component");
         testButton.addClickHandler(e -> {
@@ -200,6 +201,15 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         });
         PWindow.getMain().add(dynamicComponentButton);
 
+        final PButton CheckButton = Element.newPButton("Static Component");
+        //Create a static UI component
+        CheckButton.addClickHandler(e -> {
+            final PLabel staticLabel = Element.newPLabel("Static component created");
+            staticLabel.addStyleName("static-component");
+            PWindow.getMain().add(staticLabel);
+        });
+        PWindow.getMain().add(CheckButton);
+        /*
         final StringTextBoxFormField formField = new StringTextBoxFormField("String Formfield");
         PWindow.getMain().add(formField);
         final ColorInputFormField colorInputFormField = new ColorInputFormField("Color FormField");
@@ -217,11 +227,11 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
             }
         };
         PWindow.getMain().add(colorInputFormField);
-
+        */
         uiContext.setTerminalDataReceiver((object, instruction) -> System.err.println(object + " : " + instruction));
 
         //createReconnectingPanel();
-
+        /*
         mainLabel = Element.newPLabel("Can be dd by anybody : ₲ῳ₸");
         mainLabel.setAttributeLinkedToValue("data-title");
         mainLabel.setTitle("String ASCII");
@@ -366,6 +376,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         POptionPane.showConfirmDialog(PWindow.getMain(), null, "BBB");
 
         // uiContext.getHistory().newItem("", false);
+        */
     }
 
     private void testScene() {
