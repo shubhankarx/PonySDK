@@ -124,6 +124,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
+            
+            // Enable dictionary compression after handshake is complete
+            setDictionaryEnabled(true);
+            
         } catch (final Exception e) {
             log.error("Cannot process WebSocket instructions", e);
         }
