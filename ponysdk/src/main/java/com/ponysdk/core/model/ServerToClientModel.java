@@ -263,7 +263,12 @@ public enum ServerToClientModel {
     DISCLOSURE_PANEL_CLOSE_IMG(ValueTypeModel.INTEGER),
     SUGGESTIONS(ValueTypeModel.STRING),
     DEFAULT_SUGGESTIONS(ValueTypeModel.STRING),
-    TEXTBOX_ID(ValueTypeModel.INTEGER);
+    TEXTBOX_ID(ValueTypeModel.INTEGER),
+
+    // Dictionary optimization frames
+    DICTIONARY_PATTERN_START(ValueTypeModel.UINT31),
+    DICTIONARY_PATTERN_END(ValueTypeModel.NULL),
+    DICTIONARY_REFERENCE(ValueTypeModel.UINT31);
 
     public static final int MAX_VALUE = Short.MAX_VALUE;
     private static final ServerToClientModel[] VALUES = ServerToClientModel.values();

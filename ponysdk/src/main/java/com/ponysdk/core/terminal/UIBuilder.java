@@ -38,15 +38,21 @@ import com.ponysdk.core.model.WidgetType;
 import com.ponysdk.core.terminal.instruction.PTInstruction;
 import com.ponysdk.core.terminal.model.BinaryModel;
 import com.ponysdk.core.terminal.model.ReaderBuffer;
+//import com.ponysdk.core.server.websocket.ModelValuePair;
+import com.ponysdk.core.terminal.socket.ClientModelTracker.ModelValuePair;
 import com.ponysdk.core.terminal.request.RequestBuilder;
 import com.ponysdk.core.terminal.ui.*;
 import elemental.html.Uint8Array;
 import elemental.util.Collections;
 import elemental.util.MapFromIntTo;
 import elemental.util.MapFromStringTo;
+import com.ponysdk.core.terminal.socket.ClientModelTracker;
+import com.ponysdk.core.model.ValueTypeModel;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -62,6 +68,9 @@ public class UIBuilder {
     private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();
 
     private final ReaderBuffer readerBuffer = new ReaderBuffer();
+    private final ClientModelTracker clientTracker = new ClientModelTracker();
+    // Will hold a model we can reuse during pattern replay
+    private BinaryModel replayBinaryModel;
 
     private RequestBuilder requestBuilder;
 
@@ -73,6 +82,8 @@ public class UIBuilder {
         if (log.isLoggable(Level.INFO)) log.info("Init graphical system");
 
         this.requestBuilder = requestBuilder;
+        // Initialize the reusable binary model
+        this.replayBinaryModel = readerBuffer.readBinaryModel();
 
         PTHistory.addValueChangeHandler(this);
 
@@ -114,6 +125,8 @@ public class UIBuilder {
                 PonySDK.get().setHeartBeatPeriod(readerBuffer.readBinaryModel().getIntValue());
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
             } else if (ServerToClientModel.DESTROY_CONTEXT == model) {
+                // Clear recorded patterns on context reset
+                clientTracker.clear();
                 destroy();
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
             } else if (ServerToClientModel.HEARTBEAT == model) {
@@ -216,6 +229,26 @@ public class UIBuilder {
                 processRemoveHandler(buffer, binaryModel.getIntValue());
             } else if (ServerToClientModel.TYPE_HISTORY == model) {
                 processHistory(buffer, binaryModel.getStringValue());
+            } else if (ServerToClientModel.DICTIONARY_PATTERN_START == model) {
+                // First BinaryModel contains the pattern ID as its value
+                int patternId = binaryModel.getIntValue();
+                List<ModelValuePair> pattern = new ArrayList<>();
+                BinaryModel bm;
+                while ((bm = readerBuffer.readBinaryModel()).getModel() != ServerToClientModel.DICTIONARY_PATTERN_END) {
+                    Object val = extractValue(bm, readerBuffer);
+                    pattern.add(new ModelValuePair(bm.getModel(), val));
+                }
+                clientTracker.recordPattern(patternId, pattern);
+                return;
+            } else if (ServerToClientModel.DICTIONARY_REFERENCE == model) {
+                final int refId = binaryModel.getIntValue();
+                final List<ModelValuePair> pattern = clientTracker.getPattern(refId);
+                if (pattern != null) {
+                    for (ModelValuePair p : pattern) {
+                        applyFrame(p.getModel(), p.getValue(), buffer);
+                    }
+                }
+                return;
             } else {
                 log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
                 if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
@@ -485,6 +518,65 @@ public class UIBuilder {
         final PTFrame frame = (PTFrame) getPTObject(frameID);
         if (frame != null) frame.setReady();
         else log.warning("Frame " + frame + " doesn't exist");
+    }
+
+    /**
+     * Replay a single model/value pair using existing update logic.
+     */
+    private void applyFrame(final ServerToClientModel model, final Object value, final ReaderBuffer buffer) {
+        // Use reusable BinaryModel
+        switch (model.getTypeModel()) {
+            case BOOLEAN:
+                replayBinaryModel.init(model, (boolean) value, 1);
+                break;
+            case BYTE: case SHORT: case INTEGER:
+                replayBinaryModel.init(model, ((Number) value).intValue(), 1);
+                break;
+            case LONG:
+                replayBinaryModel.init(model, ((Number) value).longValue(), 1);
+                break;
+            case FLOAT:
+                replayBinaryModel.init(model, ((Number) value).floatValue(), 1);
+                break;
+            case DOUBLE:
+                replayBinaryModel.init(model, ((Number) value).doubleValue(), 1);
+                break;
+            case STRING:
+                replayBinaryModel.init(model, (String) value, ((String) value).length());
+                break;
+            case ARRAY:
+                replayBinaryModel.init(model, (JSONArray) value, 1);
+                break;
+            default:
+                replayBinaryModel.init(model, 0);
+        }
+        update(replayBinaryModel, buffer);
+    }
+
+    /**
+     * Extracts the correct typed value from a BinaryModel.
+     */
+    private Object extractValue(final BinaryModel bm, final ReaderBuffer buffer) {
+        switch (bm.getModel().getTypeModel()) {
+            case BOOLEAN:
+                return bm.getBooleanValue();
+            case BYTE:
+            case SHORT:
+            case INTEGER:
+                return bm.getIntValue();
+            case LONG:
+                return bm.getLongValue();
+            case FLOAT:
+                return bm.getFloatValue();
+            case DOUBLE:
+                return bm.getDoubleValue();
+            case STRING:
+                return bm.getStringValue();
+            case ARRAY:
+                return bm.getArrayValue();
+            default:
+                return null;
+        }
     }
 
 }

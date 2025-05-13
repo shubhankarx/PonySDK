@@ -89,7 +89,10 @@ public enum ClientToServerModel {
     HANDLER_PASTE("S"),
     HANDLER_WIDGET_VISIBILITY("T"),
     HANDLER_DOCUMENT_VISIBILITY("U"),
-    HANDLER_DESTROY("V");
+    HANDLER_DESTROY("V"),
+    
+    // Dictionary optimization
+    DICTIONARY_REQUEST("W");
 
     private final String key;
 

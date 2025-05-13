@@ -25,6 +25,7 @@ package com.ponysdk.core.server.websocket;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -71,6 +72,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private Listener listener;
 
     private long lastSentPing;
+    
+    // Dictionary compression settings (enabled by default)
+    private final ModelValueDictionary dictionary = new ModelValueDictionary();
+    private final List<ModelValuePair> currentBatch = new ArrayList<>();
+    private static final int BATCH_THRESHOLD = 10;
+    private boolean dictionaryEnabled = true;
 
     public WebSocket() {
     }
@@ -90,6 +97,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             final CommunicationSanityChecker communicationSanityChecker = new CommunicationSanityChecker(uiContext);
             context.registerUIContext(uiContext);
+            
+            // Initially disable dictionary until everything is confirmed working
+            setDictionaryEnabled(false);
 
             uiContext.acquire();
             try {
@@ -164,6 +174,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     processTerminalLog(jsonObject, ClientToServerModel.WARN_MSG);
                 } else if (jsonObject.containsKey(ClientToServerModel.INFO_MSG.toStringValue())) {
                     processTerminalLog(jsonObject, ClientToServerModel.INFO_MSG);
+                } else if (jsonObject.containsKey(ClientToServerModel.DICTIONARY_REQUEST.toStringValue())) {
+                    // Handle dictionary pattern request
+                    final int patternId = jsonObject.getJsonNumber(ClientToServerModel.DICTIONARY_REQUEST.toStringValue()).intValue();
+                    handleDictionaryRequest(patternId);
                 } else {
                     log.error("Unknown message from terminal #{} : {}", uiContext.getID(), message);
                 }
@@ -330,17 +344,130 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             return;
         }
 
+        // Skip dictionary for critical protocol frames
+        if (!dictionaryEnabled || isControlFrame(model)) {
+            try {
+                if (loggerOut.isTraceEnabled())
+                    loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
+                websocketPusher.encode(model, value);
+                if (listener != null) listener.onOutgoingPonyFrame(model, value);
+            } catch (final IOException e) {
+                log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
+                uiContext.destroy();
+            }
+            return;
+        }
+
+        // Process with dictionary for application frames
         try {
-            if (loggerOut.isTraceEnabled())
-                loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
-            websocketPusher.encode(model, value);
-            if (listener != null) listener.onOutgoingPonyFrame(model, value);
+            final ModelValuePair pair = new ModelValuePair(model, value);
+            
+            // First try to find the complete pattern including this pair
+            currentBatch.add(pair);
+            Integer patternId = dictionary.getPatternId(currentBatch);
+            
+            if (patternId != null) {
+                // Use existing pattern reference
+                if (loggerOut.isTraceEnabled())
+                    loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                currentBatch.clear();
+                return;
+            }
+            
+            // Check if we need to flush batch
+            if (currentBatch.size() >= BATCH_THRESHOLD) {
+                Integer newId = dictionary.recordPattern(currentBatch);
+                if (newId != null) {
+                    // Send pattern definition
+                    if (loggerOut.isTraceEnabled())
+                        loggerOut.trace("UIContext #{} : DICTIONARY_PATTERN_START {}", this.uiContext.getID(), newId);
+                    websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                    if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                    
+                    // Send all frames in pattern
+                    for (ModelValuePair p : currentBatch) {
+                        if (loggerOut.isTraceEnabled())
+                            loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), p.getModel(), p.getValue());
+                        websocketPusher.encode(p.getModel(), p.getValue());
+                        if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
+                    }
+                    
+                    // End pattern definition
+                    if (loggerOut.isTraceEnabled())
+                        loggerOut.trace("UIContext #{} : DICTIONARY_PATTERN_END", this.uiContext.getID());
+                    websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                    if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                } else {
+                    // Send all frames directly (no pattern stored)
+                    for (ModelValuePair p : currentBatch) {
+                        if (loggerOut.isTraceEnabled())
+                            loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), p.getModel(), p.getValue());
+                        websocketPusher.encode(p.getModel(), p.getValue());
+                        if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
+                    }
+                }
+                currentBatch.clear();
+            }
+            
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
         }
     }
 
+    /**
+     * Check if a model is a critical control frame that should bypass dictionary
+     */
+    private boolean isControlFrame(final ServerToClientModel model) {
+        switch (model) {
+            case CREATE_CONTEXT:
+            case OPTION_FORMFIELD_TABULATION:
+            case HEARTBEAT_PERIOD:
+            case HEARTBEAT:
+            case ROUNDTRIP_LATENCY:
+            case END:
+                return true;
+            default:
+                return false;
+        }
+    }
+    
+    /**
+     * Handle dictionary pattern request from client
+     */
+    public void handleDictionaryRequest(final int patternId) {
+        List<ModelValuePair> pattern = dictionary.getPattern(patternId);
+        if (pattern != null) {
+            try {
+                beginObject();
+                encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
+                for (ModelValuePair pair : pattern) {
+                    encode(pair.getModel(), pair.getValue());
+                }
+                encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                endObject();
+                flush();
+            } catch (Exception e) {
+                log.error("Error sending dictionary pattern to client", e);
+            }
+        } else {
+            log.warn("Client requested unknown dictionary pattern: {}", patternId);
+        }
+    }
+
+    /**
+     * Enable or disable dictionary compression
+     */
+    public void setDictionaryEnabled(boolean enabled) {
+        this.dictionaryEnabled = enabled;
+        if (!enabled) {
+            // Clear current batch and dictionary when disabling
+            currentBatch.clear();
+            dictionary.clear();
+        }
+    }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
         try {
@@ -454,3 +581,4 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     }
 }
+
