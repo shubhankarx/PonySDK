@@ -68,9 +68,10 @@ public class UIBuilder {
     private final MapFromStringTo<JavascriptAddOnFactory> javascriptAddOnFactories = Collections.mapFromStringTo();
 
     private final ReaderBuffer readerBuffer = new ReaderBuffer();
+    
     private final ClientModelTracker clientTracker = new ClientModelTracker();
     // Will hold a model we can reuse during pattern replay
-    private BinaryModel replayBinaryModel;
+    private final BinaryModel replayBinaryModel = new BinaryModel();
 
     private RequestBuilder requestBuilder;
 
@@ -82,9 +83,7 @@ public class UIBuilder {
         if (log.isLoggable(Level.INFO)) log.info("Init graphical system");
 
         this.requestBuilder = requestBuilder;
-        // Initialize the reusable binary model
-        this.replayBinaryModel = readerBuffer.readBinaryModel();
-
+        // replayBinaryModel remains a separate instance for pattern replay
         PTHistory.addValueChangeHandler(this);
 
         final PTCookies cookies = new PTCookies(this);
@@ -130,7 +129,13 @@ public class UIBuilder {
                 destroy();
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
             } else if (ServerToClientModel.HEARTBEAT == model) {
-                readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
+                // consume END frame ONCE
+                readerBuffer.readBinaryModel();
+                // tell server we're still here using HEARTBEAT_REQUEST
+                final PTInstruction hb = new PTInstruction();
+                hb.put(ClientToServerModel.HEARTBEAT_REQUEST, true);
+                requestBuilder.send(hb);
+                return;
             } else {
                 final int oldCurrentWindowId = currentWindowId;
                 if (ServerToClientModel.WINDOW_ID == model) currentWindowId = binaryModel.getIntValue();
@@ -249,7 +254,8 @@ public class UIBuilder {
                     }
                 }
                 return;
-            } else {
+            }
+             else {
                 log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
                 if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
             }

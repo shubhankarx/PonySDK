@@ -1,0 +1,2 @@
+[2025-05-13T11:50:31.874+0200][0.070s][info][gc] Using Concurrent Mark Sweep
+[2025-05-13T11:50:31.874+0200][0.071s][info][gc,heap,coops] Heap address: 0x00000005c0000000, size: 8192 MB, Compressed Oops mode: Zero based, Oop shift amount: 3

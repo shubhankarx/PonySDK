@@ -43,7 +43,7 @@ public class BinaryModel {
     private String stringValue;
     private JSONArray arrayValue;
 
-    protected BinaryModel() {
+    public BinaryModel() {
     }
 
     public void init(final ServerToClientModel key, final boolean value, final int size) {

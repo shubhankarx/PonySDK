@@ -125,9 +125,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
             
-            // Enable dictionary compression after handshake is complete
-            setDictionaryEnabled(true);
-            
+            // Schedule dictionary compression to enable after 20 seconds
+            new java.util.Timer(true).schedule(new java.util.TimerTask() {
+                @Override
+                public void run() {
+                    setDictionaryEnabled(true);
+                }
+            }, 10_000);
         } catch (final Exception e) {
             log.error("Cannot process WebSocket instructions", e);
         }
@@ -348,6 +352,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             return;
         }
 
+        // For END frames, flush any pending batch first
+        if (dictionaryEnabled && model == ServerToClientModel.END && !currentBatch.isEmpty()) {
+            flushCurrentBatch();
+        }
+
         // Skip dictionary for critical protocol frames
         if (!dictionaryEnabled || isControlFrame(model)) {
             try {
@@ -413,8 +422,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     }
                 }
                 currentBatch.clear();
+                return; // Return early after batch flush to prevent sending duplicate or out-of-order frames
             }
             
+            // Default: below threshold & no pattern—send this frame immediately
+            // Start of Selection  
+            // No dictionary reference matched and batch is below threshold:
+            // send this frame immediately to avoid delaying UI updates.
+            websocketPusher.encode(model, value);
+            // If a listener is registered, notify it of the outgoing frame for logging or monitoring.
+            if (listener != null) listener.onOutgoingPonyFrame(model, value);
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
@@ -583,6 +600,38 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
         void onIncomingWebSocketFrame(int headerLength, int payloadLength);
 
+    }
+
+    /**
+     * Flush current batch before handling critical frames like END
+     * to ensure proper UI response cycle completion
+     */
+    private void flushCurrentBatch() {
+        if (currentBatch.isEmpty()) return;
+        
+        try {
+            if (loggerOut.isTraceEnabled())
+                loggerOut.trace("UIContext #{} : Flushing batch of size {}", this.uiContext.getID(), currentBatch.size());
+            
+            Integer newId = dictionary.recordPattern(currentBatch);
+            if (newId != null) {
+                // Send pattern definition
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                for (ModelValuePair p : currentBatch) {
+                    websocketPusher.encode(p.getModel(), p.getValue());
+                }
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+            } else {
+                // Send all frames directly
+                for (ModelValuePair p : currentBatch) {
+                    websocketPusher.encode(p.getModel(), p.getValue());
+                }
+            }
+        } catch (IOException e) {
+            log.error("Error flushing batch", e);
+        } finally {
+            currentBatch.clear();
+        }
     }
 }
 
