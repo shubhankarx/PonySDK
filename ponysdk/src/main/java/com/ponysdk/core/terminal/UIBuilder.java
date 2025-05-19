@@ -254,8 +254,9 @@ public class UIBuilder {
                     }
                 }
                 return;
-            }
-             else {
+            } else if (ServerToClientModel.DICTIONARY_PATTERN_END == model) {
+                return;
+            } else {
                 log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
                 if (ServerToClientModel.END != model) buffer.shiftNextBlock(false);
             }

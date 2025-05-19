@@ -141,6 +141,7 @@ public class BinaryModel {
         else if (ValueTypeModel.STRING == typeModel) return model + " => " + stringValue;
         else if (ValueTypeModel.FLOAT == typeModel) return model + " => " + floatValue;
         else if (ValueTypeModel.ARRAY == typeModel) return model + " => " + arrayValue;
+        else if (ValueTypeModel.UINT31 == typeModel) return model + " => " + intValue;
         else throw new IllegalArgumentException("No model type configured : " + typeModel);
     }
 
