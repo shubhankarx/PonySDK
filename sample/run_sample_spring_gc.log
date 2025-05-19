@@ -1238,3 +1238,7 @@
 [2025-05-19T15:51:06.642+0200][125.629s][info][safepoint    ] Entering safepoint region: Cleanup
 [2025-05-19T15:51:06.642+0200][125.629s][info][safepoint    ] Leaving safepoint region
 [2025-05-19T15:51:06.642+0200][125.629s][info][safepoint    ] Total time for which application threads were stopped: 0.0001230 seconds, Stopping threads took: 0.0000556 seconds
+[2025-05-19T15:55:08.477+0200][367.446s][info][safepoint    ] Application time: 241.8156730 seconds
+[2025-05-19T15:55:08.478+0200][367.446s][info][safepoint    ] Entering safepoint region: Cleanup
+[2025-05-19T15:55:08.478+0200][367.447s][info][safepoint    ] Leaving safepoint region
+[2025-05-19T15:55:08.478+0200][367.447s][info][safepoint    ] Total time for which application threads were stopped: 0.0006595 seconds, Stopping threads took: 0.0003626 seconds
