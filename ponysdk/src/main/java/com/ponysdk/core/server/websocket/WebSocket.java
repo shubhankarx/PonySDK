@@ -47,6 +47,7 @@ import org.slf4j.LoggerFactory;
 
 import com.ponysdk.core.model.ClientToServerModel;
 import com.ponysdk.core.model.ServerToClientModel;
+import com.ponysdk.core.model.ValueTypeModel;
 import com.ponysdk.core.server.application.ApplicationConfiguration;
 import com.ponysdk.core.server.application.ApplicationManager;
 import com.ponysdk.core.server.application.UIContext;
@@ -442,6 +443,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Check if a model is a critical control frame that should bypass dictionary
      */
     private boolean isControlFrame(final ServerToClientModel model) {
+        // treat any UINT31-typed model as protocol frame to bypass dictionary
+        if (model.getTypeModel() == ValueTypeModel.UINT31) return true;
         switch (model) {
             case CREATE_CONTEXT:
             case OPTION_FORMFIELD_TABULATION:
