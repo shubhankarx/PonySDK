@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Collections;
 import java.util.List;
 import java.util.ArrayList;
+import com.ponysdk.core.model.ServerToClientModel;
 
 /**
  * Thread-safe dictionary to detect and store repeated patterns of ModelValuePair sequences.
@@ -28,8 +29,27 @@ public class ModelValueDictionary {
 
     /**
      * Record one occurrence of a pattern. Returns existing or new ID if threshold reached, otherwise null.
+     * Added validation to ensure we don't store invalid patterns.
      */
     public Integer recordPattern(final List<ModelValuePair> pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            return null;
+        }
+
+        // Check if pattern has a type command - patterns without type commands can cause issues
+        boolean hasTypeCommand = false;
+        for (ModelValuePair pair : pattern) {
+            if (isTypeCommand(pair.getModel())) {
+                hasTypeCommand = true;
+                break;
+            }
+        }
+
+        // Skip patterns that don't have a TYPE_* command as they can't be properly replayed
+        if (!hasTypeCommand) {
+            return null;
+        }
+
         final Integer existing = patternToId.get(pattern);
         if (existing != null) return existing;
 
@@ -53,19 +73,32 @@ public class ModelValueDictionary {
     }
 
     /**
-     * Retrieve stored pattern sequence by ID.
+     * Get pattern by ID if exists, otherwise null.
      */
     public List<ModelValuePair> getPattern(final int id) {
         return idToPattern.get(id);
     }
 
     /**
-     * Clear all recorded patterns and reset dictionary state.
+     * Clear all patterns and counts.
      */
     public void clear() {
         patternCounts.clear();
         patternToId.clear();
         idToPattern.clear();
         nextId.set(1);
+    }
+
+    /**
+     * Check if a model is a TYPE_* command (used for update routing)
+     */
+    private boolean isTypeCommand(ServerToClientModel model) {
+        return model == ServerToClientModel.TYPE_CREATE ||
+               model == ServerToClientModel.TYPE_UPDATE ||
+               model == ServerToClientModel.TYPE_ADD ||
+               model == ServerToClientModel.TYPE_REMOVE ||
+               model == ServerToClientModel.TYPE_ADD_HANDLER ||
+               model == ServerToClientModel.TYPE_REMOVE_HANDLER ||
+               model == ServerToClientModel.TYPE_GC;
     }
 } 

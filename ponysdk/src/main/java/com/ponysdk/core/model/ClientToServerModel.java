@@ -92,7 +92,8 @@ public enum ClientToServerModel {
     HANDLER_DESTROY("V"),
     
     // Dictionary optimization
-    DICTIONARY_REQUEST("W");
+    DICTIONARY_REQUEST("W"),
+    DICTIONARY_ENABLED("X");
 
     private final String key;
 
