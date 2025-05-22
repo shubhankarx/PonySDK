@@ -123,6 +123,9 @@ import com.ponysdk.core.ui.scene.Scene;
 import com.ponysdk.sample.client.event.UserLoggedOutEvent;
 import com.ponysdk.sample.client.event.UserLoggedOutHandler;
 import com.ponysdk.sample.client.page.addon.LoggerAddOn;
+import javax.json.JsonObjectBuilder;
+import javax.json.JsonObject;
+import javax.json.Json;
 
 public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
 
@@ -173,6 +176,43 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
             PScheduler.schedule(UIContext.get(), updateTask, Duration.ofMillis(2000));
         });
         PWindow.getMain().add(testButton);
+
+        // Add a simple dictionary monitor
+        final PButton dictionaryButton = Element.newPButton("Show Dictionary Status");
+        dictionaryButton.addClickHandler(e -> {
+            // Create label to display dictionary info
+            final PLabel dictionaryInfo = Element.newPLabel("Dictionary stats logged to server console");
+            
+            // Create container panel
+            final PFlowPanel panel = Element.newPFlowPanel();
+            panel.add(dictionaryInfo);
+            
+            // Add close button
+            final PButton closeButton = Element.newPButton("Close");
+            closeButton.addClickHandler(closeEvent -> panel.removeFromParent());
+            panel.add(closeButton);
+            
+            // Add refresh button
+            final PButton refreshButton = Element.newPButton("Refresh Stats");
+            refreshButton.addClickHandler(refreshEvent -> {
+                requestDictionaryStats();
+                dictionaryInfo.setText("Dictionary stats logged to server console at " + new Date());
+            });
+            panel.add(refreshButton);
+            
+            // Show the panel
+            PWindow.getMain().add(panel);
+            
+            // Request dictionary stats initially
+            requestDictionaryStats();
+        });
+        
+        PWindow.getMain().add(dictionaryButton);
+
+        // Create a divider
+        final PLabel divider = Element.newPLabel("──────────────────────────────────────");
+        divider.addStyleName("divider");
+        PWindow.getMain().add(divider);
 
         // Add a button to demonstrate dynamic component creation
         final PButton dynamicComponentButton = Element.newPButton("Create Dynamic Components");
@@ -1329,6 +1369,19 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
             this.coucou4 = coucou4;
         }
 
+    }
+
+    private void requestDictionaryStats() {
+        try {
+            // Create a JSON request for dictionary stats
+            final JsonObjectBuilder builder = Json.createObjectBuilder();
+            builder.add("Y", true); // Y is the key for DICTIONARY_STATS
+            
+            // Fire the request to the server
+            UIContext.get().fireClientData(builder.build());
+        } catch (Exception e) {
+            log.error("Error requesting dictionary stats", e);
+        }
     }
 
 }

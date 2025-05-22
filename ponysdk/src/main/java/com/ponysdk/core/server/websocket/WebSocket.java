@@ -28,6 +28,7 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -77,10 +78,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     // Dictionary compression settings (enabled by default)
     private final ModelValueDictionary dictionary = new ModelValueDictionary();
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
-    private static final int BATCH_THRESHOLD = 10;
+    private static final int BATCH_THRESHOLD = 3;
     private boolean dictionaryEnabled = true; // Enabled by default
+    
+    // Timer for logging dictionary status
+    private java.util.Timer dictionaryLogTimer;
 
     public WebSocket() {
+        // Timer will be initialized after UIContext is available
     }
 
     @Override
@@ -126,6 +131,17 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
             
+            // Start periodic dictionary logging (every 10 seconds)
+            dictionaryLogTimer = new java.util.Timer("dictionary-logger", true);
+            dictionaryLogTimer.scheduleAtFixedRate(new java.util.TimerTask() {
+                @Override
+                public void run() {
+                    if (isAlive()) {
+                        logDictionary();
+                    }
+                }
+            }, 20000, 10000); // First log after 20 seconds, then every 10 seconds
+            
             // Enable dictionary compression after UI is completely loaded and stable (15 seconds)
             // This delay ensures all widgets are correctly initialized before enabling compression
             new java.util.Timer(true).schedule(new java.util.TimerTask() {
@@ -147,11 +163,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
     }
 
-    
-
     @Override
     public void onWebSocketError(final Throwable throwable) {
         log.error("WebSocket Error on UIContext #{}", uiContext.getID(), throwable);
+        
+        // Clean up timer on error
+        if (dictionaryLogTimer != null) {
+            dictionaryLogTimer.cancel();
+            dictionaryLogTimer = null;
+        }
+        
         uiContext.onDestroy();
     }
 
@@ -160,6 +181,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         if (log.isInfoEnabled())
             log.info("WebSocket closed on UIContext #{} : {}, reason : {}", uiContext.getID(),
                     NiceStatusCode.getMessage(statusCode), Objects.requireNonNullElse(reason, ""));
+        
+        // Clean up timer when socket is closed
+        if (dictionaryLogTimer != null) {
+            dictionaryLogTimer.cancel();
+            dictionaryLogTimer = null;
+        }
+        
         uiContext.onDestroy();
     }
 
@@ -234,6 +262,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         if (jsonObject.containsKey(ClientToServerModel.DICTIONARY_REQUEST.toStringValue())) {
             final int patternId = jsonObject.getJsonNumber(ClientToServerModel.DICTIONARY_REQUEST.toStringValue()).intValue();
             handleDictionaryRequest(patternId);
+            return;
+        }
+        
+        // Handle dictionary stats request
+        if (jsonObject.containsKey("Y")) { // "Y" is the key for DICTIONARY_STATS
+            log.info("Client requested dictionary stats for UIContext #{}", uiContext.getID());
+            logDictionary();
             return;
         }
         
@@ -378,9 +413,29 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             return;
         }
 
+        // Count frames for statistics
+        if (model != null && model != ServerToClientModel.END) {
+            dictionary.incrementTotalFrames();
+        }
+
         // For END frames, flush any pending batch first
-        if (dictionaryEnabled && model == ServerToClientModel.END && !currentBatch.isEmpty()) {
-            flushCurrentBatch();
+        if (model == ServerToClientModel.END) {
+            if (dictionaryEnabled && !currentBatch.isEmpty()) {
+                log.debug("END marker - flushing current batch of size {}", currentBatch.size());
+                flushCurrentBatch();
+            }
+            
+            // Always encode END directly
+            try {
+                if (loggerOut.isTraceEnabled())
+                    loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
+                websocketPusher.encode(model, value);
+                if (listener != null) listener.onOutgoingPonyFrame(model, value);
+            } catch (final IOException e) {
+                log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
+                uiContext.destroy();
+            }
+            return;
         }
 
         // Skip dictionary for critical protocol frames
@@ -411,15 +466,36 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 return;
             }
             
+            // Check if this is an array value which is common in UI events
+            boolean containsArray = value != null && value.getClass().isArray();
+            if (containsArray && log.isDebugEnabled()) {
+                String arrayStr = "unknown array";
+                if (value instanceof int[]) {
+                    arrayStr = Arrays.toString((int[])value);
+                } else if (value instanceof boolean[]) {
+                    arrayStr = Arrays.toString((boolean[])value);
+                } else if (value instanceof Object[]) {
+                    arrayStr = Arrays.toString((Object[])value);
+                } else if (value instanceof double[]) {
+                    arrayStr = Arrays.toString((double[])value);
+                } else if (value instanceof float[]) {
+                    arrayStr = Arrays.toString((float[])value);
+                }
+                log.debug("Processing array value for model {} in UIContext #{}: {}", 
+                         model, uiContext.getID(), arrayStr);
+            }
+            
             // Process TYPE commands specially (start new dictionary contexts for this frame)
             if (isTypeCommand(model)) {
                 // Flush any pending batches to ensure clean command sequence
                 if (!currentBatch.isEmpty()) {
+                    log.debug("TYPE command - flushing previous batch of size {}", currentBatch.size());
                     flushCurrentBatch();
                 }
                 
                 // Start a new batch with this type command
                 currentBatch.add(pair);
+                log.debug("Starting new batch with TYPE command: {}", model);
                 return;
             }
             
@@ -427,29 +503,39 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             // as they're critical for proper widget initialization
             if (model == ServerToClientModel.WIDGET_TYPE) {
                 currentBatch.add(pair);
+                log.debug("Added WIDGET_TYPE to batch (size: {})", currentBatch.size());
                 return;
             }
             
             // Check if we already have a batch in progress
             if (!currentBatch.isEmpty()) {
-                // First try to find the complete pattern including this pair
-                List<ModelValuePair> testPattern = new ArrayList<>(currentBatch);
-                testPattern.add(pair);
+                // Add to current batch first to build up the command sequence
+                currentBatch.add(pair);
+                log.debug("Added to existing batch (size: {})", currentBatch.size());
                 
+                // Check for matching patterns after adding to batch
+                List<ModelValuePair> testPattern = new ArrayList<>(currentBatch);
                 Integer patternId = dictionary.getPatternId(testPattern);
+                
                 if (patternId != null) {
-                    // Use existing pattern reference
+                    // Use existing pattern reference instead of flushing the batch
+                    log.debug("Found pattern match ID {} for batch of size {}", patternId, currentBatch.size());
+                    
                     if (loggerOut.isTraceEnabled())
                         loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
                     websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                    
+                    // Count as compressed frames
+                    dictionary.incrementCompressedFrames();
+                    
                     currentBatch.clear();
                     return;
                 }
                 
-                // Add to current batch and check threshold
-                currentBatch.add(pair);
+                // Check if we've reached the batch threshold
                 if (currentBatch.size() >= BATCH_THRESHOLD) {
+                    log.debug("Batch threshold reached ({}) - flushing", BATCH_THRESHOLD);
                     flushCurrentBatch();
                 }
                 return;
@@ -457,6 +543,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             
             // No batch in progress, start a new one (typically this is for single frame updates)
             currentBatch.add(pair);
+            log.debug("Started new batch with non-TYPE command: {}", model);
         } catch (final IOException e) {
             log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
             uiContext.destroy();
@@ -714,6 +801,70 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                model == ServerToClientModel.TYPE_ADD_HANDLER || 
                model == ServerToClientModel.TYPE_REMOVE_HANDLER || 
                model == ServerToClientModel.TYPE_GC;
+    }
+
+    /**
+     * Log the current dictionary contents and statistics to help with debugging
+     */
+    private void logDictionary() {
+        try {
+            StringBuilder sb = new StringBuilder("\n=== Dictionary Contents (UIContext #")
+                .append(uiContext.getID())
+                .append(") ===\n");
+            
+            // Add dictionary status
+            sb.append("Dictionary enabled: ").append(dictionaryEnabled).append("\n");
+            
+            // Add compression statistics
+            long totalFrames = dictionary.getTotalFramesSent();
+            long compressedFrames = dictionary.getCompressedFramesSent();
+            double compressionRatio = totalFrames > 0 ? (double)compressedFrames / totalFrames : 0;
+            
+            sb.append("\n=== COMPRESSION STATS ===\n");
+            sb.append("Total frames sent: ").append(totalFrames).append("\n");
+            sb.append("Compressed frames: ").append(compressedFrames).append("\n");
+            sb.append("Compression ratio: ").append(String.format("%.2f%%", compressionRatio * 100)).append("\n\n");
+            
+            // Get dictionary patterns
+            Map<Integer, List<ModelValuePair>> patterns = dictionary.getPatternMap();
+            sb.append("Total patterns: ").append(patterns.size()).append("\n\n");
+            
+            // Show patterns (limited to 5 for readability)
+            int count = 0;
+            for (Map.Entry<Integer, List<ModelValuePair>> entry : patterns.entrySet()) {
+                if (count++ >= 5) {
+                    sb.append("... and ").append(patterns.size() - 5).append(" more patterns\n");
+                    break;
+                }
+                
+                int id = entry.getKey();
+                List<ModelValuePair> pattern = entry.getValue();
+                
+                sb.append("Pattern #").append(id).append(" (").append(pattern.size()).append(" pairs):\n");
+                for (ModelValuePair pair : pattern) {
+                    sb.append("  ").append(pair.getModel()).append(" = ");
+                    Object pairValue = pair.getValue();
+                    if (pairValue instanceof String) {
+                        // Truncate long strings
+                        String strValue = (String) pairValue;
+                        sb.append("\"").append(strValue.length() > 20 ? 
+                            strValue.substring(0, 20) + "..." : strValue).append("\"");
+                    } else {
+                        sb.append(pairValue);
+                    }
+                    sb.append("\n");
+                }
+                sb.append("\n");
+            }
+            
+            // End of logging
+            sb.append("================================\n");
+            
+            // Log the information
+            log.info(sb.toString());
+        } catch (Exception e) {
+            log.warn("Error logging dictionary contents", e);
+        }
     }
 }
 

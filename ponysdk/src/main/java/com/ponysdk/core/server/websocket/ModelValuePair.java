@@ -23,6 +23,7 @@
 package com.ponysdk.core.server.websocket;
 
 import com.ponysdk.core.model.ServerToClientModel;
+import java.util.Arrays;
 import java.util.Objects;
 
 /**
@@ -51,11 +52,48 @@ public final class ModelValuePair {
         if (this == o) return true;
         if (!(o instanceof ModelValuePair)) return false;
         final ModelValuePair that = (ModelValuePair) o;
-        return model == that.model && Objects.equals(value, that.value);
+        
+        if (model != that.model) return false;
+        
+        // Handle array values specially
+        if (value == that.value) return true;
+        if (value == null || that.value == null) return false;
+        
+        // Array handling
+        if (value.getClass().isArray() && that.value.getClass().isArray()) {
+            if (value instanceof int[] && that.value instanceof int[]) {
+                return Arrays.equals((int[]) value, (int[]) that.value);
+            }
+            if (value instanceof boolean[] && that.value instanceof boolean[]) {
+                return Arrays.equals((boolean[]) value, (boolean[]) that.value);
+            }
+            if (value instanceof Object[] && that.value instanceof Object[]) {
+                return Arrays.equals((Object[]) value, (Object[]) that.value);
+            }
+            if (value instanceof double[] && that.value instanceof double[]) {
+                return Arrays.equals((double[]) value, (double[]) that.value);
+            }
+            if (value instanceof float[] && that.value instanceof float[]) {
+                return Arrays.equals((float[]) value, (float[]) that.value);
+            }
+        }
+        
+        // Default equality for non-array values
+        return Objects.equals(value, that.value);
     }
 
     @Override
     public int hashCode() {
+        // Handle array values specially for hash code
+        if (value != null && value.getClass().isArray()) {
+            if (value instanceof int[]) return 31 * model.hashCode() + Arrays.hashCode((int[]) value);
+            if (value instanceof boolean[]) return 31 * model.hashCode() + Arrays.hashCode((boolean[]) value);
+            if (value instanceof Object[]) return 31 * model.hashCode() + Arrays.hashCode((Object[]) value);
+            if (value instanceof double[]) return 31 * model.hashCode() + Arrays.hashCode((double[]) value);
+            if (value instanceof float[]) return 31 * model.hashCode() + Arrays.hashCode((float[]) value);
+        }
+        
+        // Default hash for non-array values
         return Objects.hash(model, value);
     }
 
