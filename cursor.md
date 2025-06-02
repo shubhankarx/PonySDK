@@ -89,7 +89,7 @@ try {
 
 This optimization aims to reduce WebSocket traffic by replacing repetitive patterns with short references, particularly beneficial for applications with frequent, predictable UI updates. 
 
-xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
+xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
@@ -283,3 +283,89 @@ For AI-driven code generation:
 - Design flexible reference resolution mechanisms
 
 This comprehensive analysis provides a deep dive into the dictionary optimization system, highlighting its architecture, key components, and strategies for efficient WebSocket communication compression.
+
+```mermaid
+sequenceDiagram
+    participant Client as Client (UIBuilder)
+    participant Server as Server (WebSocket)
+    participant ServerDict as Server Dictionary
+    participant ClientDict as Client Dictionary
+
+    %% === Connection & Setup ===
+    Client->>Server: WebSocket Upgrade (HTTP→WS)
+    activate Server
+    Note right of Server: onWebSocketConnect()
+    Server->>Server: setDictionaryEnabled(false)
+    Server->>Client: CREATE_CONTEXT, OPTION_FORMFIELD_TABULATION,<br>HEARTBEAT_PERIOD, END (all raw)
+    Server->>Server: Schedule Timer(15s) → setDictionaryEnabled(true)
+    deactivate Server
+
+    %% === Client signals dictionary support ===
+    Client->>Server: {"DICTIONARY_ENABLED": true}
+    Note left of Client: init() sends dictionary support signal
+
+    %% === Runtime Loop with Dictionary Disabled ===
+    loop Until dictionary is enabled (first 15s)
+        Server->>Client: Raw frames (TYPE_*, properties, etc.)
+        Note right of Server: encode() bypasses dictionary<br>when !dictionaryEnabled
+    end
+
+    %% === Dictionary gets enabled ===
+    Note right of Server: Timer triggers after 15s
+    Server->>Server: setDictionaryEnabled(true)
+
+    %% === Runtime Loop with Dictionary Enabled ===
+    loop For each encode(model,value) call
+        alt Control Frame (heartbeat, END, etc.)
+            Server->>Server: isControlFrame(model) → true
+            Server->>Client: Raw frame (bypass dictionary)
+        else TYPE_* Command (TYPE_CREATE, TYPE_UPDATE, etc.)
+            Server->>Server: isTypeCommand(model) → true
+            Server->>Server: flushCurrentBatch() if needed
+            Server->>Server: currentBatch.add(new ModelValuePair(model,value))
+            Note right of Server: Start new batch with TYPE command
+        else Normal Property Update
+            Server->>Server: currentBatch.add(new ModelValuePair(model,value))
+            
+            alt Batch size >= BATCH_THRESHOLD or END frame
+                Server->>Server: flushCurrentBatch()
+                Server->>ServerDict: recordPattern(currentBatch)
+                alt Pattern frequency >= threshold
+                    ServerDict-->>Server: newPatternId
+                    Server->>Client: DICTIONARY_PATTERN_START, newPatternId
+                    loop For each pair in batch
+                        Server->>Client: pair.model, pair.value
+                    end
+                    Server->>Client: DICTIONARY_PATTERN_END
+                    Note left of Client: clientTracker.recordPattern(patternId, pattern)
+                else Pattern not frequent enough
+                    ServerDict-->>Server: null
+                    loop For each pair in batch
+                        Server->>Client: Raw frame (pair.model, pair.value)
+                    end
+                end
+            else Batch matches existing pattern
+                Server->>ServerDict: getPatternId(testPattern)
+                ServerDict-->>Server: existingPatternId
+                Server->>Client: DICTIONARY_REFERENCE, existingPatternId
+                Note left of Client: clientTracker.getPattern(refId)
+                Client->>Client: Replay pattern instructions
+            end
+        end
+    end
+
+    %% === Pattern Request Flow ===
+    alt Client receives unknown pattern reference
+        Client->>Server: {"DICTIONARY_REQUEST": patternId}
+        activate Server
+        Server->>ServerDict: getPattern(patternId)
+        ServerDict-->>Server: pattern
+        Server->>Client: DICTIONARY_PATTERN_START, patternId
+        loop For each pair in pattern
+            Server->>Client: pair.model, pair.value
+        end
+        Server->>Client: DICTIONARY_PATTERN_END
+        deactivate Server
+        Client->>ClientDict: recordPattern(patternId, pattern)
+    end
+```
