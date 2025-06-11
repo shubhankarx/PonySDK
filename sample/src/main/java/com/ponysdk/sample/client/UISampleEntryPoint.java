@@ -60,6 +60,7 @@ import com.ponysdk.core.ui.basic.Element;
 import com.ponysdk.core.ui.basic.IsPWidget;
 import com.ponysdk.core.ui.basic.PAbsolutePanel;
 import com.ponysdk.core.ui.basic.PButton;
+import com.ponysdk.core.ui.basic.PCheckBox;
 import com.ponysdk.core.ui.basic.PComplexPanel;
 import com.ponysdk.core.ui.basic.PCookies;
 import com.ponysdk.core.ui.basic.PDateBox;
@@ -73,6 +74,7 @@ import com.ponysdk.core.ui.basic.PFunctionalLabel;
 import com.ponysdk.core.ui.basic.PLabel;
 import com.ponysdk.core.ui.basic.PListBox;
 import com.ponysdk.core.ui.basic.PMenuBar;
+import com.ponysdk.core.ui.basic.PRadioButton;
 import com.ponysdk.core.ui.basic.PRichTextArea;
 import com.ponysdk.core.ui.basic.PScript;
 import com.ponysdk.core.ui.basic.PScrollPanel;
@@ -228,8 +230,31 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         };
         PWindow.getMain().add(colorInputFormField);
         */
+
+
+        // 2) Add a checkbox:
+        final PCheckBox checkBoxD = Element.newPCheckBox("Check D");
+        PWindow.getMain().add(checkBoxD);
+
+        // 3) Add a radio button (you can group them by passing the same label or group name):
+        final PRadioButton radioE = Element.newPRadioButton("Radio E");
+        PWindow.getMain().add(radioE);
+
+        // 4) Add a text box:
+        final PTextBox textBoxF = Element.newPTextBox();
+        textBoxF.setPlaceholder("Enter text (F)");
+        PWindow.getMain().add(textBoxF);
+
+        // 5) Add a list box (dropdown):
+        final PListBox listBoxG = Element.newPListBox(false);
+        listBoxG.addItem("Option G1");
+        listBoxG.addItem("Option G2");
+        listBoxG.addItem("Option G3");
+        PWindow.getMain().add(listBoxG);
         uiContext.setTerminalDataReceiver((object, instruction) -> System.err.println(object + " : " + instruction));
 
+
+        
         //createReconnectingPanel();
         /*
         mainLabel = Element.newPLabel("Can be dd by anybody : ₲ῳ₸");
