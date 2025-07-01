@@ -36,6 +36,7 @@ import javax.json.JsonArray;
 import javax.json.JsonObject;
 import javax.json.JsonObjectBuilder;
 import javax.json.JsonReader;
+import javax.json.Json;
 import org.eclipse.jetty.util.component.Container;
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.StatusCode;
@@ -54,6 +55,12 @@ import com.ponysdk.core.server.application.UIContext;
 import com.ponysdk.core.server.context.CommunicationSanityChecker;
 import com.ponysdk.core.server.stm.TxnContext;
 import com.ponysdk.core.ui.basic.PObject;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
@@ -79,6 +86,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
     private static final int BATCH_THRESHOLD = 10;
     private boolean dictionaryEnabled = true; // Enabled by default
+
+    private final List<String> bufferedInstructions = new ArrayList<>();
+    private String lastPrediction = null;
+    private int instructionsProcessedCount=0;
+    private final Object predictionLock = new Object();
 
     public WebSocket() {
     }
@@ -126,6 +138,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             applicationManager.startApplication(uiContext);
             communicationSanityChecker.start();
             
+
             // Enable dictionary compression after UI is completely loaded and stable (15 seconds)
             // This delay ensures all widgets are correctly initialized before enabling compression
             new java.util.Timer(true).schedule(new java.util.TimerTask() {
@@ -248,6 +261,36 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         uiContext.execute(() -> {
             final JsonArray appInstructions = jsonObject.getJsonArray(applicationInstructions);
             for (int i = 0; i < appInstructions.size(); i++) {
+                JsonObject currentInstructionJson = appInstructions.getJsonObject(i);
+                String currentInstructionString = currentInstructionJson.toString();
+
+                synchronized (predictionLock) {
+                    bufferedInstructions.add(currentInstructionString);
+                    instructionsProcessedCount++;
+
+                    if(bufferedInstructions.size()==2){
+                        List<String> instructionsToPredict = new ArrayList<>(bufferedInstructions);
+                        bufferedInstructions.clear();
+
+                        sendJsonPostRequestUsingHttpURLConnection(instructionsToPredict);
+                        log.info("Send 2 instructions to FastAPI. Waiting for prediction for the 3rd instruction (total processed: {}).", instructionsProcessedCount +1);
+
+                    }
+                    else if (instructionsProcessedCount % 3 == 0 && lastPrediction != null){
+                        log.info("Instruction Comparison (Cycle: {})",instructionsProcessedCount);
+                        log.info("Actual Instruction (Client): {}", currentInstructionString);
+                        log.info("FastAPI Prediction: {}", lastPrediction);
+
+                        if(currentInstructionString.equals(lastPrediction)){
+                            log.info("Prediction MATCHED the actual instruction.");
+                        }
+                        else{
+                            log.warn("Prediction MISMATCH! Expected: {}, Got: {}", lastPrediction, currentInstructionString);
+                        }
+                        lastPrediction = null;
+                        bufferedInstructions.clear();
+                    }
+                }
                 uiContext.fireClientData(appInstructions.getJsonObject(i));
             }
         });
@@ -630,6 +673,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         extension.setWebSocketListener(listener);
     }
 
+    
+
     public interface Listener {
 
         void onOutgoingPonyFrame(ServerToClientModel model, Object value);
@@ -714,6 +759,116 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                model == ServerToClientModel.TYPE_ADD_HANDLER || 
                model == ServerToClientModel.TYPE_REMOVE_HANDLER || 
                model == ServerToClientModel.TYPE_GC;
+    }
+
+    /**
+     * Demonstrates a JSON POST request using HttpURLConnection.
+     * This method is placed on the server-side within WebSocket.java.
+     * It executes the network request in a separate thread to avoid
+     * blocking the main WebSocket processing thread.
+     */
+    private void sendJsonPostRequestUsingHttpURLConnection(List<String> instructionsToSend) {
+        // Wrap the network call in a new thread to avoid blocking the current thread.
+        new Thread(() -> {
+            HttpURLConnection con = null;
+            try {
+                // Define the URL of your FastAPI server endpoint.
+                // Ensure your FastAPI server is running on http://127.0.0.1:8000/.
+                URL url = new URL("http://127.0.0.1:8000/generate"); 
+                
+                // Open a connection to the URL.
+                con = (HttpURLConnection) url.openConnection();
+                
+                // Set the request method to POST.
+                con.setRequestMethod("POST");
+                
+                // Set Content-Type header to "application/json".
+                con.setRequestProperty("Content-Type", "application/json");
+                
+                // Set Accept header to "application/json".
+                con.setRequestProperty("Accept", "application/json");
+                
+                // 5. Enable output for the connection.
+                //    This tells the connection that we intend to write data to the output stream.
+                con.setDoOutput(true);
+
+                // 6. Define the JSON string to send.
+                //    This is the payload that your FastAPI server expects.
+                String instructionsContent = instructionsToSend.stream()
+                .map(Object::toString)
+                .collect(Collectors.joining("\n"));
+
+                // Use JsonObjectBuilder to properly format the JSON string,
+                // which will handle escaping of special characters like newlines and quotes.
+                JsonObjectBuilder jsonBuilder = Json.createObjectBuilder()
+                    .add("input_text", instructionsContent)
+                    .add("max_length", 64);
+                
+                String jsonInputString = jsonBuilder.build().toString();
+                
+                //String jsonInputString = "{\"input_text\": \"PButton#6, text=Send Custom UI Component, html=null : {\\\"0\\\":6,\\\"g\\\":2,\\\"f\\\":[116,67,106,15,1,false,false,false,false],\\\"d\\\":[10,52,23,182]}\\nPButton#7, text=Create Dynamic Components, html=null : {\\\"0\\\":7,\\\"g\\\":2,\\\"f\\\":[242,57,51,5,1,false,false,false,false],\\\"d\\\":[191,52,23,186]}\\nPButton#8, text=Static Component, html=null : {\\\"0\\\":8,\\\"g\\\":2,\\\"f\\\":[405,59,28,7,1,false,false,false,false],\\\"d\\\":[377,52,23,119]}\", \"max_length\": 64}";
+                
+                // 7. Write the JSON string to the connection's output stream.
+                //    The data is converted to bytes using UTF-8 encoding.
+                try (OutputStream os = con.getOutputStream()) {
+                    byte[] input = jsonInputString.getBytes(StandardCharsets.UTF_8);
+                    os.write(input, 0, input.length);
+                }
+
+                // Read the response from the server.
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(con.getInputStream(), StandardCharsets.UTF_8))) {
+                    StringBuilder response = new StringBuilder();
+                    String responseLine;
+                    while ((responseLine = br.readLine()) != null) {
+                        response.append(responseLine.trim());
+                    }
+                    // Log the HTTP response code and the received response body.
+                    log.info("FastAPI HTTP Response Code: " + con.getResponseCode() + ", Body: " + response);
+
+                    String prediction = null;
+                    try{
+                        String responseString = response.toString();
+                        int keyIndex = responseString.indexOf("\"instruction\":");
+                        if (keyIndex != -1){
+                            int valueStartIndex = responseString.indexOf("\"",keyIndex + "\"instruction\":".length());
+                            if (valueStartIndex!=-1){
+                                valueStartIndex++;
+                                int valueEndIndex = responseString.indexOf("\"", keyIndex +"\"instruction\":".length());
+                            }
+                        }
+                    } catch (Exception e){
+                        log.warn("Failed to parse prediction from FastAPI response: " + response, e);
+                    }
+
+                    synchronized (predictionLock){
+                        lastPrediction = prediction;
+                    }
+
+                    // IMPORTANT: To send information back to the client-side UI,
+                    // acquire the UIContext and execute on the UI thread. For example:
+                    // if (uiContext != null) {
+                    //     uiContext.execute(() -> {
+                    //         PWindow.getMain().add(Element.newPLabel("Server received FastAPI response: " + response.toString()));
+                    //     });
+                    // }
+
+                }
+            } catch (IOException e) {
+                // Log any errors during the HTTP request.
+                log.error("Error sending request to FastAPI from WebSocket server: " + e.getMessage(), e);
+                // For example, to send error information back to the client-side UI:
+                // if (uiContext != null) {
+                //     uiContext.execute(() -> {
+                //         PWindow.getMain().add(Element.newPLabel("Server error communicating with FastAPI: " + e.getMessage()));
+                //     });
+                // }
+            } finally {
+                // Disconnect the HttpURLConnection to release resources.
+                if (con != null) {
+                    con.disconnect();
+                }
+            }
+        }).start(); // Start the new thread for the network call.
     }
 }
 

@@ -95,6 +95,8 @@ public class WebSocketPusher extends AutoFlushedBuffer implements WriteCallback 
      * @param value The type can be primitives, String or Object[]
      */
     void encode(final ServerToClientModel model, final Object value) throws IOException {
+        //log.info("Encoding model: {} with value: {}", model, value);
+
         switch (model.getTypeModel()) {
             case NULL:
                 write(model);
