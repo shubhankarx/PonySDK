@@ -31,6 +31,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.json.JsonArray;
 import javax.json.JsonObject;
@@ -92,7 +96,52 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private int instructionsProcessedCount=0;
     private final Object predictionLock = new Object();
 
+    private final List<String> recentInstructions = new ArrayList<>();
+    private final Map<List<String>, Integer> patternFrequency = new HashMap<>();
+    private static final int PATTERN_LENGTH = 3;
+    private static final int MIN_FREQUENCY = 5; // Minimum occurrences to consider as a pattern
+    private static final int MAX_HISTORY = 1000; // Maximum number of instructions to keep in history
+
+    // Buffer for streaming pattern matching
+    private final ArrayDeque<String> instructionBuffer = new ArrayDeque<>(3);
+    
+    private static final class TrieNode {
+            final java.util.Map<String, TrieNode> child = new java.util.HashMap<>();
+            boolean isTerminal;            // true when we have a-b-c
+    }
+
+    private static TrieNode DICT_TRIE = new TrieNode();
+
+    private static void buildDictionaryTrie(List<List<String>> patterns) {
+            for (List<String> p : patterns) {
+                TrieNode n = DICT_TRIE;
+                for (String ev : p) n = n.child.computeIfAbsent(ev, k -> new TrieNode());
+                n.isTerminal = true;
+            }
+    }
+
     public WebSocket() {
+        // Initialize with some example patterns for testing
+        List<List<String>> examplePatterns = new ArrayList<>();
+        
+        // Example patterns based on common UI interactions
+        // These are just examples - in production, you would derive these from actual usage
+        List<String> pattern1 = new ArrayList<>();
+        pattern1.add("{\"0\":6,\"g\":2}"); // Click event on button #6
+        pattern1.add("{\"0\":7,\"g\":2}"); // Click event on button #7
+        pattern1.add("{\"0\":8,\"g\":2}"); // Click event on button #8
+        examplePatterns.add(pattern1);
+        
+        List<String> pattern2 = new ArrayList<>();
+        pattern2.add("{\"0\":1,\"C\":\"value\"}"); // Value change on widget #1
+        pattern2.add("{\"0\":2,\"C\":\"value\"}"); // Value change on widget #2
+        pattern2.add("{\"0\":3,\"C\":\"value\"}"); // Value change on widget #3
+        examplePatterns.add(pattern2);
+        
+        // Build the trie with these example patterns
+        buildDictionaryTrie(examplePatterns);
+        
+        log.info("Initialized pattern matcher with {} example patterns", examplePatterns.size());
     }
 
     @Override
@@ -173,6 +222,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         if (log.isInfoEnabled())
             log.info("WebSocket closed on UIContext #{} : {}, reason : {}", uiContext.getID(),
                     NiceStatusCode.getMessage(statusCode), Objects.requireNonNullElse(reason, ""));
+        
+        // Flush any remaining buffered instructions before destroying the context
+        flushInstructionBuffer();
+        
         uiContext.onDestroy();
     }
 
@@ -265,31 +318,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 String currentInstructionString = currentInstructionJson.toString();
 
                 synchronized (predictionLock) {
-                    bufferedInstructions.add(currentInstructionString);
                     instructionsProcessedCount++;
-
-                    if(bufferedInstructions.size()==2){
-                        List<String> instructionsToPredict = new ArrayList<>(bufferedInstructions);
-                        bufferedInstructions.clear();
-
-                        sendJsonPostRequestUsingHttpURLConnection(instructionsToPredict);
-                        log.info("Send 2 instructions to FastAPI. Waiting for prediction for the 3rd instruction (total processed: {}).", instructionsProcessedCount +1);
-
-                    }
-                    else if (instructionsProcessedCount % 3 == 0 && lastPrediction != null){
-                        log.info("Instruction Comparison (Cycle: {})",instructionsProcessedCount);
-                        log.info("Actual Instruction (Client): {}", currentInstructionString);
-                        log.info("FastAPI Prediction: {}", lastPrediction);
-
-                        if(currentInstructionString.equals(lastPrediction)){
-                            log.info("Prediction MATCHED the actual instruction.");
-                        }
-                        else{
-                            log.warn("Prediction MISMATCH! Expected: {}, Got: {}", lastPrediction, currentInstructionString);
-                        }
-                        lastPrediction = null;
-                        bufferedInstructions.clear();
-                    }
+                    
+                    // Use the pattern matcher instead of simple buffering
+                    processInstructionWithPatternMatching(currentInstructionString);
                 }
                 uiContext.fireClientData(appInstructions.getJsonObject(i));
             }
@@ -827,48 +859,230 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
                     String prediction = null;
                     try{
-                        String responseString = response.toString();
-                        int keyIndex = responseString.indexOf("\"instruction\":");
-                        if (keyIndex != -1){
-                            int valueStartIndex = responseString.indexOf("\"",keyIndex + "\"instruction\":".length());
-                            if (valueStartIndex!=-1){
-                                valueStartIndex++;
-                                int valueEndIndex = responseString.indexOf("\"", keyIndex +"\"instruction\":".length());
+                        // Parse the JSON response to extract the 'instruction' field
+                        try (JsonReader jsonResponseReader = Json.createReader(new StringReader(response.toString()))) {
+                            JsonObject jsonResponse = jsonResponseReader.readObject();
+                            if (jsonResponse.containsKey("generated_text")) {
+                                prediction = jsonResponse.getString("generated_text");
                             }
                         }
-                    } catch (Exception e){
-                        log.warn("Failed to parse prediction from FastAPI response: " + response, e);
+
+                        log.info("FastAPI HTTP Response Code: " + con.getResponseCode() + ", Body: " + response);
+
+                        // BEGIN : Prediction Comparison Logic (FastAPI Response)
+                        if (prediction != null && !instructionsToSend.isEmpty()) {
+                            String actualInstruction = instructionsToSend.get(instructionsToSend.size() - 1); // Get the last instruction sent
+                            String predictedInstruction = prediction;
+
+                            log.info("--- Instruction Comparison (FastAPI Response) ---");
+                            log.info("Actual (Client) : {}", actualInstruction);
+                            log.info("Predicted (FastAPI): {}", predictedInstruction);
+
+                            double similarityScore = calculateSimilarity(actualInstruction, predictedInstruction);
+                            log.info("Similarity Score: {}", String.format("%.2f", similarityScore));
+
+                            if (actualInstruction.equals(predictedInstruction)) {
+                                log.info("Result: Prediction EXACTLY MATCHED the actual instruction.");
+                            } else if (similarityScore >= 0.8) { // You can adjust this threshold
+                                log.warn("Result: Prediction is SIMILAR (score >= 0.8) but not exact.");
+                                int diffIndex = findFirstDifferenceIndex(actualInstruction, predictedInstruction);
+                                if (diffIndex != -1) {
+                                    log.warn("First difference at index {}: Actual='{}', Predicted='{}'",
+                                             diffIndex,
+                                             (diffIndex < actualInstruction.length() ? actualInstruction.charAt(diffIndex) : "EOF"),
+                                             (diffIndex < predictedInstruction.length() ? predictedInstruction.charAt(diffIndex) : "EOF"));
+                                }
+                            } else {
+                                log.warn("Result: Prediction MISMATCH! Low similarity score.");
+                                int diffIndex = findFirstDifferenceIndex(actualInstruction, predictedInstruction);
+                                if (diffIndex != -1) {
+                                    log.warn("First difference at index {}: Actual='{}', Predicted='{}'",
+                                             diffIndex,
+                                             (diffIndex < actualInstruction.length() ? actualInstruction.charAt(diffIndex) : "EOF"),
+                                             (diffIndex < predictedInstruction.length() ? predictedInstruction.charAt(diffIndex) : "EOF"));
+                                }
+                            }
+                        }
+                        // END : Prediction Comparison Logic
+
+                        synchronized (predictionLock) {
+                            lastPrediction = prediction; // Update lastPrediction with the current prediction
+                        }
+                    } catch (Exception e) {
+                        log.error("Error parsing FastAPI response or performing comparison: ", e);
                     }
 
-                    synchronized (predictionLock){
-                        lastPrediction = prediction;
-                    }
-
-                    // IMPORTANT: To send information back to the client-side UI,
-                    // acquire the UIContext and execute on the UI thread. For example:
-                    // if (uiContext != null) {
-                    //     uiContext.execute(() -> {
-                    //         PWindow.getMain().add(Element.newPLabel("Server received FastAPI response: " + response.toString()));
-                    //     });
-                    // }
-
-                }
-            } catch (IOException e) {
-                // Log any errors during the HTTP request.
-                log.error("Error sending request to FastAPI from WebSocket server: " + e.getMessage(), e);
-                // For example, to send error information back to the client-side UI:
-                // if (uiContext != null) {
-                //     uiContext.execute(() -> {
-                //         PWindow.getMain().add(Element.newPLabel("Server error communicating with FastAPI: " + e.getMessage()));
-                //     });
-                // }
-            } finally {
-                // Disconnect the HttpURLConnection to release resources.
-                if (con != null) {
                     con.disconnect();
                 }
+            } catch (IOException e) {
+                log.error("Error sending POST request to FastAPI: ", e);
             }
         }).start(); // Start the new thread for the network call.
+    }
+
+    /**
+     * Calculates a simple character-by-character similarity ratio between two strings.
+     * This is a basic implementation and not equivalent to Python's difflib.SequenceMatcher.ratio().
+     * Returns a value between 0.0 (no similarity) and 1.0 (exact match).
+     */
+    private static double calculateSimilarity(String a, String b) {
+        if (a == null || b == null) {
+            return 0.0;
+        }
+        if (a.equals(b)) {
+            return 1.0;
+        }
+
+        int maxLength = Math.max(a.length(), b.length());
+        if (maxLength == 0) {
+            return 1.0; // Both empty strings, considered similar
+        }
+
+        int matchingCharacters = 0;
+        int minLength = Math.min(a.length(), b.length());
+
+        for (int i = 0; i < minLength; i++) {
+            if (a.charAt(i) == b.charAt(i)) {
+                matchingCharacters++;
+            }
+        }
+        // Ratio based on matching characters over the longest string length
+        return (double) matchingCharacters / maxLength;
+    }
+
+    private static int findFirstDifferenceIndex(String s1, String s2) {
+        if (s1 == null || s2 == null) {
+            return 0; // Or -1, depending on desired behavior for nulls
+        }
+        int minLength = Math.min(s1.length(), s2.length());
+        for (int i = 0; i < minLength; i++) {
+            if (s1.charAt(i) != s2.charAt(i)) {
+                return i;
+            }
+        }
+        if (s1.length() != s2.length()) {
+            return minLength; // One string is a prefix of the other
+        }
+        return -1; // Strings are identical
+    }
+
+    /**
+     * Process a single instruction through the pattern matcher.
+     * If it forms a known pattern with buffered instructions, send them as a batch.
+     * If it cannot form any pattern, send the oldest instruction individually.
+     */
+    private void processInstructionWithPatternMatching(String instruction) {
+        // Learn from this instruction
+        learnPatterns(instruction);
+        
+        instructionBuffer.addLast(instruction);
+        
+        while (!instructionBuffer.isEmpty()) {
+            // Try to match the current buffer against the trie
+            TrieNode node = DICT_TRIE;
+            boolean possibleMatch = true;
+            int index = 0;
+            
+            // Create a copy of the buffer for iteration to avoid concurrent modification
+            List<String> bufferCopy = new ArrayList<>(instructionBuffer);
+            
+            for (String event : bufferCopy) {
+                if (!node.child.containsKey(event)) {
+                    // This prefix cannot match any pattern
+                    possibleMatch = false;
+                    break;
+                }
+                
+                node = node.child.get(event);
+                index++;
+                
+                // If we've matched a complete pattern of length 3
+                if (index == 3 && node.isTerminal) {
+                    // We have a complete match, send these 3 instructions as a batch
+                    List<String> matchedPattern = new ArrayList<>(3);
+                    for (int i = 0; i < 3; i++) {
+                        matchedPattern.add(instructionBuffer.pollFirst());
+                    }
+                    
+                    log.info("Pattern match found! Sending batch of 3 instructions");
+                    sendJsonPostRequestUsingHttpURLConnection(matchedPattern);
+                    break; // Restart with the remaining buffer
+                }
+            }
+            
+            if (!possibleMatch) {
+                // The first instruction cannot be part of any pattern, send it individually
+                String singleInstruction = instructionBuffer.pollFirst();
+                log.info("No pattern match possible for: {}", singleInstruction.length() > 50 ? 
+                         singleInstruction.substring(0, 50) + "..." : singleInstruction);
+                sendJsonPostRequestUsingHttpURLConnection(Collections.singletonList(singleInstruction));
+            } else if (instructionBuffer.size() < 3) {
+                // We have a partial match but not enough instructions to complete it
+                log.debug("Partial pattern match, buffering {} instructions", instructionBuffer.size());
+                break;
+            } else {
+                // We have enough instructions but no complete match yet
+                break;
+            }
+        }
+        
+        // Safety check: ensure buffer doesn't grow beyond pattern length
+        while (instructionBuffer.size() > 3) {
+            instructionBuffer.pollFirst();
+        }
+    }
+
+    /**
+     * Flush any remaining instructions in the buffer.
+     * This should be called when the WebSocket is closing or when we need to ensure
+     * all buffered instructions are sent.
+     */
+    private void flushInstructionBuffer() {
+        if (!instructionBuffer.isEmpty()) {
+            log.info("Flushing {} remaining buffered instructions", instructionBuffer.size());
+            List<String> remainingInstructions = new ArrayList<>(instructionBuffer);
+            instructionBuffer.clear();
+            sendJsonPostRequestUsingHttpURLConnection(remainingInstructions);
+        }
+    }
+
+    /**
+     * Learn patterns from actual usage by tracking instruction sequences.
+     * This method should be called periodically to update the trie with new patterns.
+     */
+    private void learnPatterns(String newInstruction) {
+        // Add the new instruction to our recent history
+        recentInstructions.add(newInstruction);
+        
+        // If we have enough history to form a pattern
+        if (recentInstructions.size() >= PATTERN_LENGTH) {
+            // Extract the most recent pattern of length PATTERN_LENGTH
+            List<String> pattern = new ArrayList<>(PATTERN_LENGTH);
+            for (int i = recentInstructions.size() - PATTERN_LENGTH; i < recentInstructions.size(); i++) {
+                pattern.add(recentInstructions.get(i));
+            }
+            
+            // Update the frequency count for this pattern
+            patternFrequency.put(pattern, patternFrequency.getOrDefault(pattern, 0) + 1);
+            
+            // If this pattern is frequent enough, add it to our trie
+            if (patternFrequency.get(pattern) >= MIN_FREQUENCY) {
+                // Add this pattern to our trie if it's not already there
+                TrieNode node = DICT_TRIE;
+                for (String event : pattern) {
+                    node = node.child.computeIfAbsent(event, k -> new TrieNode());
+                }
+                node.isTerminal = true;
+                
+                log.info("Learned new pattern with frequency {}: {}", 
+                         patternFrequency.get(pattern), pattern);
+            }
+        }
+        
+        // Limit the size of our history
+        if (recentInstructions.size() > MAX_HISTORY) {
+            recentInstructions.remove(0);
+        }
     }
 }
 
