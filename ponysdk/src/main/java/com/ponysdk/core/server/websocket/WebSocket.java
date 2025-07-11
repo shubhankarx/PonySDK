@@ -31,10 +31,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import java.util.ArrayDeque;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
 
 import javax.json.JsonArray;
 import javax.json.JsonObject;
@@ -65,6 +62,8 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+//import com.ponysdk.core.server.PScheduler;
 
 public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
@@ -72,6 +71,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private static final Logger log = LoggerFactory.getLogger(WebSocket.class);
     private static final Logger loggerIn = LoggerFactory.getLogger("WebSocket-IN");
     private static final Logger loggerOut = LoggerFactory.getLogger("WebSocket-OUT");
+    // A dedicated logger to trace the semantic pattern matching and prediction flow.
+    private static final Logger PRED = LoggerFactory.getLogger("PredictionLogger");
 
     private ServletUpgradeRequest request;
     private WebsocketMonitor monitor;
@@ -86,62 +87,107 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private long lastSentPing;
     
     // Dictionary compression settings (enabled by default)
-    private final ModelValueDictionary dictionary = new ModelValueDictionary();
+    private final ModelValueDictionary dictionary = new ModelValueDictionary(1);
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
     private static final int BATCH_THRESHOLD = 10;
     private boolean dictionaryEnabled = true; // Enabled by default
 
-    private final List<String> bufferedInstructions = new ArrayList<>();
+    // -- Start of Semantic Pattern Matching for Prediction --
+
+    // A buffer to hold incoming instructions while we check for a matching triplet pattern.
+    private final List<String> currentPatternBuffer = new ArrayList<>();
+    // Holds the last prediction received from the FastAPI service for comparison.
     private String lastPrediction = null;
-    private int instructionsProcessedCount=0;
+    // A lock to ensure thread-safe access to the prediction buffer.
     private final Object predictionLock = new Object();
+    private final List<List<String>> accumulatedPatterns = Collections.synchronizedList(new ArrayList<>());
 
-    private final List<String> recentInstructions = new ArrayList<>();
-    private final Map<List<String>, Integer> patternFrequency = new HashMap<>();
-    private static final int PATTERN_LENGTH = 3;
-    private static final int MIN_FREQUENCY = 5; // Minimum occurrences to consider as a pattern
-    private static final int MAX_HISTORY = 1000; // Maximum number of instructions to keep in history
 
-    // Buffer for streaming pattern matching
-    private final ArrayDeque<String> instructionBuffer = new ArrayDeque<>(3);
-    
+    // Represents a node in our semantic pattern Trie.
     private static final class TrieNode {
-            final java.util.Map<String, TrieNode> child = new java.util.HashMap<>();
-            boolean isTerminal;            // true when we have a-b-c
+        // Each child represents the next component type in a potential pattern.
+        final java.util.Map<String, TrieNode> child = new java.util.HashMap<>();
+        // Marks the end of a complete, known 3-item pattern (e.g., a-b-c).
+        boolean isTerminal;
     }
 
-    private static TrieNode DICT_TRIE = new TrieNode();
+    // The root of our Trie, holding all known semantic patterns.
+    private static final TrieNode DICT_TRIE = new TrieNode();
 
-    private static void buildDictionaryTrie(List<List<String>> patterns) {
-            for (List<String> p : patterns) {
-                TrieNode n = DICT_TRIE;
-                for (String ev : p) n = n.child.computeIfAbsent(ev, k -> new TrieNode());
-                n.isTerminal = true;
+    // Statically initializes the Trie with known UI interaction patterns.
+    static {
+        // These patterns represent common sequences of UI actions we want to predict.
+        List<List<String>> initialPatterns = new ArrayList<>();
+        // Example: A user often clicks a button, which updates a label, then checks a box.
+        initialPatterns.add(Arrays.asList("PButton", "PLabel", "PCheckBox"));
+        // Example: A user interacts with a series of form-like elements.
+        initialPatterns.add(Arrays.asList("PCheckBox", "PRadioButton", "PTextBox"));
+        // Example: A user opens a panel, sees text, and clicks a button inside it.
+        initialPatterns.add(Arrays.asList("PFlowPanel", "PLabel", "PButton"));
+        initialPatterns.add(Arrays.asList("PWindow", "PSimplePanel", "PLabel"));
+        initialPatterns.add(Arrays.asList("PListBox", "PListBox", "PListBox"));
+        initialPatterns.add(Arrays.asList("PDateBox", "PDatePicker", "PButton"));
+        initialPatterns.add(Arrays.asList("PTree", "PTreeItem", "PTreeItem"));
+        initialPatterns.add(Arrays.asList("PScript", "PLabel", "PScript"));
+        initialPatterns.add(Arrays.asList("PFileUpload", "PButton", "PLabel"));
+
+        buildSemanticPatternTrie(initialPatterns);
+        // Log the constructed Trie patterns at startup for easy verification.
+        PRED.info("Dumping registered prediction patterns:");
+        dumpTrie(DICT_TRIE, "");
+    }
+
+    // Constructs the Trie from a list of defined patterns.
+    private static void buildSemanticPatternTrie(final List<List<String>> patterns) {
+        for (final List<String> p : patterns) {
+            TrieNode n = DICT_TRIE;
+            for (final String ev : p) {
+                // Creates the path in the trie for the sequence of component types.
+                n = n.child.computeIfAbsent(ev, k -> new TrieNode());
             }
+            // Marks the final node of the sequence as a valid, complete triplet.
+            n.isTerminal = true;
+        }
     }
+
+    // Checks if a sequence of component types is a valid prefix of any known triplet.
+    private boolean isPrefixOfKnownTriplet(final List<String> prefix) {
+        if (prefix.isEmpty()) return true; // An empty sequence is a prefix to all patterns.
+        TrieNode n = DICT_TRIE;
+        for (final String s : prefix) {
+            n = n.child.get(s);
+            // If at any point the path breaks, it's not a valid prefix.
+            if (n == null) return false;
+        }
+        return true; // The sequence is a valid prefix.
+    }
+
+    // Checks if a sequence of exactly three component types is a known, complete triplet.
+    private boolean isKnownTriplet(final List<String> seq) {
+        if (seq.size() != 3) return false; // We are only interested in 3-item patterns.
+        TrieNode n = DICT_TRIE;
+        for (final String s : seq) {
+            n = n.child.get(s);
+            if (n == null) return false;
+        }
+        // It's only a known triplet if the final node is marked as terminal.
+        return n.isTerminal;
+    }
+
+    // Recursively prints the contents of the Trie to the console for debugging.
+    private static void dumpTrie(final TrieNode node, final String prefix) {
+        // Check if the current prefix itself marks the end of a pattern.
+        if (node.isTerminal) {
+            PRED.info("Pattern: {} [TRIPLET]", prefix);
+        }
+        for (final java.util.Map.Entry<String, TrieNode> entry : node.child.entrySet()) {
+            dumpTrie(entry.getValue(), prefix.isEmpty() ? entry.getKey() : prefix + " -> " + entry.getKey());
+        }
+    }
+
+    // -- End of Semantic Pattern Matching for Prediction --
 
     public WebSocket() {
-        // Initialize with some example patterns for testing
-        List<List<String>> examplePatterns = new ArrayList<>();
-        
-        // Example patterns based on common UI interactions
-        // These are just examples - in production, you would derive these from actual usage
-        List<String> pattern1 = new ArrayList<>();
-        pattern1.add("{\"0\":6,\"g\":2}"); // Click event on button #6
-        pattern1.add("{\"0\":7,\"g\":2}"); // Click event on button #7
-        pattern1.add("{\"0\":8,\"g\":2}"); // Click event on button #8
-        examplePatterns.add(pattern1);
-        
-        List<String> pattern2 = new ArrayList<>();
-        pattern2.add("{\"0\":1,\"C\":\"value\"}"); // Value change on widget #1
-        pattern2.add("{\"0\":2,\"C\":\"value\"}"); // Value change on widget #2
-        pattern2.add("{\"0\":3,\"C\":\"value\"}"); // Value change on widget #3
-        examplePatterns.add(pattern2);
-        
-        // Build the trie with these example patterns
-        buildDictionaryTrie(examplePatterns);
-        
-        log.info("Initialized pattern matcher with {} example patterns", examplePatterns.size());
     }
 
     @Override
@@ -159,6 +205,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             final CommunicationSanityChecker communicationSanityChecker = new CommunicationSanityChecker(uiContext);
             context.registerUIContext(uiContext);
+            java.util.List<java.util.List<String>> knownPatterns = new java.util.ArrayList<>();
             
             // Temporarily disable dictionary until initial UI setup is complete
             setDictionaryEnabled(false);
@@ -204,6 +251,49 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     }
                 }
             }, 15000); // 15 seconds delay
+            /*
+            // Schedule a periodic task to dump the Trie every 30 seconds for debugging.
+            PScheduler.scheduleAtFixedRate(() -> {
+                if (isAlive()) {
+                    uiContext.acquire();
+                    try {
+                        PRED.info("Dumping registered prediction patterns (periodic check):");
+                        dumpTrie(DICT_TRIE, "");
+                    } finally {
+                        uiContext.release();
+                    }
+                }
+            }, Duration.ofSeconds(30)); // Dump every 30 seconds
+            */
+            
+            // Schedule a periodic task to dump the Trie every 30 seconds for debugging.
+            // Using java.util.Timer
+            new java.util.Timer(true).scheduleAtFixedRate(new java.util.TimerTask() {
+                @Override
+                public void run() {
+                    if (isAlive()) {
+                        uiContext.acquire();
+                        try {
+                            for (int id : dictionary.getPatternIds()) {
+                                List<ModelValuePair> pattern = dictionary.getPattern(id);
+                                String seq = pattern.stream()
+                                    .map(p -> p.getModel().name())
+                                    .collect(Collectors.joining(" -> "));
+                                PRED.info("Pattern #{}: {}", id, seq);
+                                }
+                                PRED.info("Dumping registered prediction patterns (periodic check):");
+                                dumpTrie(DICT_TRIE, "");
+                            /*
+                            PRED.info("Dumping registered prediction patterns (periodic check):");
+                            dumpTrie(DICT_TRIE, "");
+                            */
+                        } finally {
+                            uiContext.release();
+                        }
+                    }
+                }
+            }, 30000, 30000); // Delay and period in milliseconds
+
         } catch (final Exception e) {
             log.error("Cannot process WebSocket instructions", e);
         }
@@ -222,10 +312,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         if (log.isInfoEnabled())
             log.info("WebSocket closed on UIContext #{} : {}, reason : {}", uiContext.getID(),
                     NiceStatusCode.getMessage(statusCode), Objects.requireNonNullElse(reason, ""));
-        
-        // Flush any remaining buffered instructions before destroying the context
-        flushInstructionBuffer();
-        
+        // Before the session is destroyed, send any instructions that were waiting in the buffer.
+        flushBufferedInstructions();
         uiContext.onDestroy();
     }
 
@@ -293,6 +381,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     }
 
     private void processInstructions(final JsonObject jsonObject) {
+        System.out.println("DEBUG: processInstructions entered.");
         final String applicationInstructions = ClientToServerModel.APPLICATION_INSTRUCTIONS.toStringValue();
         loggerIn.trace("UIContext #{} : {}", this.uiContext.getID(), jsonObject);
         
@@ -314,16 +403,27 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         uiContext.execute(() -> {
             final JsonArray appInstructions = jsonObject.getJsonArray(applicationInstructions);
             for (int i = 0; i < appInstructions.size(); i++) {
-                JsonObject currentInstructionJson = appInstructions.getJsonObject(i);
-                String currentInstructionString = currentInstructionJson.toString();
+                final JsonObject currentInstructionJson = appInstructions.getJsonObject(i);
+                final String fullInstructionString = currentInstructionJson.toString();
 
-                synchronized (predictionLock) {
-                    instructionsProcessedCount++;
-                    
-                    // Use the pattern matcher instead of simple buffering
-                    processInstructionWithPatternMatching(currentInstructionString);
+                // Log every instruction received
+                loggerIn.info("Received Instruction: {}", fullInstructionString);
+
+                // Extract the component type to check against our semantic patterns.
+                final String componentType = extractComponentType(fullInstructionString);
+
+                // If a component type can be found, process it for pattern matching.
+                if (componentType != null) {
+                    processInstructionForPrediction(componentType, fullInstructionString);
+                } else {
+                    // If no type is found, it's an unknown format; flush buffer and send it alone.
+                    log.warn("Unknown instruction format, cannot extract component type: {}. Sending individually.", fullInstructionString);
+                    flushBufferedInstructions();
+                    sendJsonPostRequestUsingHttpURLConnection(Arrays.asList(fullInstructionString));
                 }
-                uiContext.fireClientData(appInstructions.getJsonObject(i));
+
+                // Forward the original instruction to the UIContext for normal processing.
+                uiContext.fireClientData(currentInstructionJson);
             }
         });
     }
@@ -747,6 +847,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             Integer newId = null;
             if (hasTypeCommand) {
                 newId = dictionary.recordPattern(currentBatch);
+                PRED.debug("Recorded pattern {}: {}", newId, currentBatch);
             }
             
             if (newId != null) {
@@ -966,123 +1067,104 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         return -1; // Strings are identical
     }
 
-    /**
-     * Process a single instruction through the pattern matcher.
-     * If it forms a known pattern with buffered instructions, send them as a batch.
-     * If it cannot form any pattern, send the oldest instruction individually.
-     */
-    private void processInstructionWithPatternMatching(String instruction) {
-        // Learn from this instruction
-        learnPatterns(instruction);
-        
-        instructionBuffer.addLast(instruction);
-        
-        while (!instructionBuffer.isEmpty()) {
-            // Try to match the current buffer against the trie
-            TrieNode node = DICT_TRIE;
-            boolean possibleMatch = true;
-            int index = 0;
+    // -- Start of Semantic Pattern Matching for Prediction --
+
+    // The core logic for the triplet-only prediction algorithm.
+    private void processInstructionForPrediction(final String componentType, final String fullInstruction) {
+        // Synchronize to ensure that buffer modifications and checks are atomic.
+        synchronized (predictionLock) {
+            // Add the new instruction to the buffer for pattern evaluation.
+            currentPatternBuffer.add(fullInstruction);
+            PRED.debug("Buffer now: {}", currentPatternBuffer);
+            // Get the list of component types currently in the buffer.
+            final List<String> componentTypes = currentPatternBuffer.stream().map(this::extractComponentType).collect(Collectors.toList());
             
-            // Create a copy of the buffer for iteration to avoid concurrent modification
-            List<String> bufferCopy = new ArrayList<>(instructionBuffer);
-            
-            for (String event : bufferCopy) {
-                if (!node.child.containsKey(event)) {
-                    // This prefix cannot match any pattern
-                    possibleMatch = false;
-                    break;
-                }
-                
-                node = node.child.get(event);
-                index++;
-                
-                // If we've matched a complete pattern of length 3
-                if (index == 3 && node.isTerminal) {
-                    // We have a complete match, send these 3 instructions as a batch
-                    List<String> matchedPattern = new ArrayList<>(3);
-                    for (int i = 0; i < 3; i++) {
-                        matchedPattern.add(instructionBuffer.pollFirst());
+
+            switch (componentTypes.size()) {
+                case 1:
+                    // If the first item cannot start any known triplet, flush it immediately.
+                    if (!isPrefixOfKnownTriplet(componentTypes)) {
+                        PRED.debug("'{}' is not a valid prefix. Flushing.", componentTypes.get(0));
+                        sendJsonPostRequestUsingHttpURLConnection(new ArrayList<>(currentPatternBuffer));
+                        currentPatternBuffer.clear();
                     }
-                    
-                    log.info("Pattern match found! Sending batch of 3 instructions");
-                    sendJsonPostRequestUsingHttpURLConnection(matchedPattern);
-                    break; // Restart with the remaining buffer
-                }
+                    // Otherwise, we wait for the second item.
+                    break;
+
+                case 2:
+                    // If the two items form a valid prefix, send them for prediction.
+                    if (isPrefixOfKnownTriplet(componentTypes)) {
+                        PRED.debug("Sending prefix for prediction: {}", componentTypes);
+                        sendJsonPostRequestUsingHttpURLConnection(new ArrayList<>(currentPatternBuffer));
+                    } else {
+                        // If the prefix is invalid, the first item was a dead end. Flush it.
+                        PRED.debug("'{}' is not a valid prefix. Flushing first item.", componentTypes);
+                        sendJsonPostRequestUsingHttpURLConnection(Arrays.asList(currentPatternBuffer.remove(0)));
+                        // Re-evaluate the buffer, which now contains only the second item as a new potential start.
+                        if (!currentPatternBuffer.isEmpty()) {
+                            processInstructionForPrediction(extractComponentType(currentPatternBuffer.get(0)), currentPatternBuffer.get(0));
+                        }
+                    }
+                    break;
+
+                case 3:
+                    // With the third item, we don't predict again. We verify the previous prediction.
+                    final String actualThirdInstruction = fullInstruction;
+                    synchronized(predictionLock) {
+                        PRED.info("Comparing prediction. Predicted: '{}', Actual: '{}'", lastPrediction, actualThirdInstruction);
+                        // NOTE: Add your comparison and logging logic here.
+                    }
+
+
+                    // If it’s not already in the trie, teach the trie this new 3-item pattern:
+                    if (!isKnownTriplet(componentTypes)) {
+                        accumulatedPatterns.add(new ArrayList<>(componentTypes));
+                        buildSemanticPatternTrie(accumulatedPatterns);
+                        PRED.info("Learned new triplet: {}", componentTypes);
+                        dumpTrie(DICT_TRIE, "");
+                    }
+                    // Reset for the next round by clearing the buffer.
+                    currentPatternBuffer.clear();
+                    // Re-inject the third item as the potential start of a new triplet.
+                    PRED.debug("Resetting buffer and starting new cycle with: {}", actualThirdInstruction);
+                    processInstructionForPrediction(extractComponentType(actualThirdInstruction), actualThirdInstruction);
+                    break;
             }
-            
-            if (!possibleMatch) {
-                // The first instruction cannot be part of any pattern, send it individually
-                String singleInstruction = instructionBuffer.pollFirst();
-                log.info("No pattern match possible for: {}", singleInstruction.length() > 50 ? 
-                         singleInstruction.substring(0, 50) + "..." : singleInstruction);
-                sendJsonPostRequestUsingHttpURLConnection(Collections.singletonList(singleInstruction));
-            } else if (instructionBuffer.size() < 3) {
-                // We have a partial match but not enough instructions to complete it
-                log.debug("Partial pattern match, buffering {} instructions", instructionBuffer.size());
-                break;
-            } else {
-                // We have enough instructions but no complete match yet
-                break;
-            }
-        }
-        
-        // Safety check: ensure buffer doesn't grow beyond pattern length
-        while (instructionBuffer.size() > 3) {
-            instructionBuffer.pollFirst();
         }
     }
 
-    /**
-     * Flush any remaining instructions in the buffer.
-     * This should be called when the WebSocket is closing or when we need to ensure
-     * all buffered instructions are sent.
-     */
-    private void flushInstructionBuffer() {
-        if (!instructionBuffer.isEmpty()) {
-            log.info("Flushing {} remaining buffered instructions", instructionBuffer.size());
-            List<String> remainingInstructions = new ArrayList<>(instructionBuffer);
-            instructionBuffer.clear();
-            sendJsonPostRequestUsingHttpURLConnection(remainingInstructions);
+    // Sends any buffered instructions individually to the prediction service.
+    private void flushBufferedInstructions() {
+        synchronized (predictionLock) {
+            // Check if there are any instructions left in the buffer.
+            if (!currentPatternBuffer.isEmpty()) {
+                log.info("Flushing {} remaining buffered instruction(s).", currentPatternBuffer.size());
+                // Send each buffered instruction as a separate, individual request.
+                for (final String bufferedInstruction : currentPatternBuffer) {
+                    sendJsonPostRequestUsingHttpURLConnection(Arrays.asList(bufferedInstruction));
+                }
+                // Clear the buffer after flushing.
+                currentPatternBuffer.clear();
+            }
         }
     }
 
-    /**
-     * Learn patterns from actual usage by tracking instruction sequences.
-     * This method should be called periodically to update the trie with new patterns.
-     */
-    private void learnPatterns(String newInstruction) {
-        // Add the new instruction to our recent history
-        recentInstructions.add(newInstruction);
-        
-        // If we have enough history to form a pattern
-        if (recentInstructions.size() >= PATTERN_LENGTH) {
-            // Extract the most recent pattern of length PATTERN_LENGTH
-            List<String> pattern = new ArrayList<>(PATTERN_LENGTH);
-            for (int i = recentInstructions.size() - PATTERN_LENGTH; i < recentInstructions.size(); i++) {
-                pattern.add(recentInstructions.get(i));
-            }
-            
-            // Update the frequency count for this pattern
-            patternFrequency.put(pattern, patternFrequency.getOrDefault(pattern, 0) + 1);
-            
-            // If this pattern is frequent enough, add it to our trie
-            if (patternFrequency.get(pattern) >= MIN_FREQUENCY) {
-                // Add this pattern to our trie if it's not already there
-                TrieNode node = DICT_TRIE;
-                for (String event : pattern) {
-                    node = node.child.computeIfAbsent(event, k -> new TrieNode());
-                }
-                node.isTerminal = true;
-                
-                log.info("Learned new pattern with frequency {}: {}", 
-                         patternFrequency.get(pattern), pattern);
-            }
-        }
-        
-        // Limit the size of our history
-        if (recentInstructions.size() > MAX_HISTORY) {
-            recentInstructions.remove(0);
-        }
+    // A utility to parse the PonySDK component type (e.g., "PButton") from a raw instruction string.
+    private String extractComponentType(final String instruction) {
+        if (instruction == null || instruction.isEmpty()) return null;
+        // The component type is typically before the first '#' character.
+        final int hashIndex = instruction.indexOf('#');
+        if (hashIndex != -1) return instruction.substring(0, hashIndex);
+
+        // Fallback for cases where there might not be an object ID.
+        final int firstSpace = instruction.indexOf(' ');
+        if (firstSpace != -1) return instruction.substring(0, firstSpace);
+        final int firstComma = instruction.indexOf(',');
+        if (firstComma != -1) return instruction.substring(0, firstComma);
+
+        return instruction.trim();
     }
+
+    // -- End of Semantic Pattern Matching for Prediction --
 }
 

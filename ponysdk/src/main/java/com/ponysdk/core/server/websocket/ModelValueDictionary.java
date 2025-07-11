@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Collections;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
 import com.ponysdk.core.model.ServerToClientModel;
 
 /**
@@ -87,6 +88,13 @@ public class ModelValueDictionary {
         patternToId.clear();
         idToPattern.clear();
         nextId.set(1);
+    }
+
+    /**
+     * Expose the set of all recorded pattern IDs.
+     */
+    public Set<Integer> getPatternIds() {
+        return Collections.unmodifiableSet(idToPattern.keySet());
     }
 
     /**
