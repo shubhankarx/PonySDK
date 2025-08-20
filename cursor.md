@@ -89,7 +89,7 @@ try {
 
 This optimization aims to reduce WebSocket traffic by replacing repetitive patterns with short references, particularly beneficial for applications with frequent, predictable UI updates. 
 
-xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
+xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
 xxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxxxxxxxxxxxxxsxxxxxxxxxxxxxxxx
@@ -283,3 +283,176 @@ For AI-driven code generation:
 - Design flexible reference resolution mechanisms
 
 This comprehensive analysis provides a deep dive into the dictionary optimization system, highlighting its architecture, key components, and strategies for efficient WebSocket communication compression.
+
+# WebSocket Performance Testing Framework
+
+## Overview
+
+This section outlines the test framework built to monitor and analyze WebSocket performance with dictionary compression and prediction features. The framework is designed to be non-invasive, working with the existing codebase without requiring modifications to production code.
+
+## Implementation Status
+
+### ✅ Completed: Test Infrastructure (Requirement 1)
+
+**Files Created:**
+- `NetworkMemoryLatencyMonitor.java` - Core monitoring class that implements WebSocket.Listener
+- `TestRunner.java` - Task-driven test execution framework
+- `TestTask.java` - Task interface for deterministic operations
+- `TextToggleTask.java` - Concrete implementation for text toggle testing
+- `WebSocketPerformanceTest.java` - JUnit tests demonstrating the framework
+
+**Monitoring Capabilities:**
+1. **Network Monitoring**
+   - Tracks outbound bytes and frame counts
+   - Categorizes frames by ServerToClientModel type
+   - Measures WebSocket frame sizes
+
+2. **Memory Monitoring**  
+   - Measures initial, current, and peak memory usage
+   - Forces GC before measurements for accuracy
+   - Tracks memory growth during test execution
+
+3. **Latency Monitoring**
+   - Measures time between first encode and final acknowledgment
+   - Provides coarse server-side latency measurements
+   - Can be extended for more granular timing
+
+### ✅ Completed: Task-Based Testing (Requirement 2)
+
+- **TestTask Interface**: Defines deterministic operations with `run()`, `id()`, and `description()`
+- **TestRunner**: Executes tasks at fixed intervals with configurable cycles
+- **TextToggleTask**: Concrete implementation that alternates text values
+
+### ✅ Completed: Text Toggle Test Case (Requirement 3)
+
+- **Test Scenario**: Alternates between "text1" and "text2" at configurable intervals
+- **Configurations**: Supports dictionary ON/OFF, prediction ON/OFF
+- **Metrics Collection**: Full instrumentation during execution
+- **Comparison Analysis**: Side-by-side performance comparison of dictionary ON vs OFF
+
+### ✅ Completed: External Dictionary Builder (Requirement 5)
+
+- **DictionaryExtractorTool.java**: Command-line tool for dictionary extraction and loading
+- **Pattern Export/Import**: JSON-based serialization of patterns
+- **Dictionary Export/Import**: Binary serialization of ModelValueDictionary
+- **Integration**: WebSocket.buildSemanticPatternTrie() integration for loading
+
+### 🚧 Pending: Dynamic Data Handling (Requirement 4)
+
+**Proposed Approach for Parameterization:**
+
+For dictionary patterns containing dynamic data, we could implement a parameterization system:
+
+1. **Parameter Placeholders**:
+   - `{id}` - For widget/object IDs
+   - `{timestamp}` - For time-based values
+   - `{text}` - For variable text content
+
+2. **Pattern Normalization**:
+   - Before storing patterns, normalize by replacing dynamic values with placeholders
+   - Example: `PButton#42` → `PButton#{id}`
+
+3. **Runtime Substitution**:
+   - When replaying patterns, substitute actual values for placeholders
+   - Maintain context to track current values for substitution
+
+## Usage Examples
+
+### Basic Performance Test
+
+```java
+// Create WebSocket instance for testing
+WebSocket webSocket = new WebSocket();
+
+// Create test runner
+TestRunner runner = new TestRunner(webSocket)
+    .configure(true, false)  // dictionary=ON, prediction=OFF
+    .setCycles(10)           // 10 test cycles
+    .setInterval(5000);      // 5 second intervals
+
+// Add text toggle task
+runner.addTask(new TextToggleTask(webSocket, "text1", "text2", 100));
+
+// Run test and get results
+TestRunner.TestResults results = runner.run();
+
+// Print report
+System.out.println(results.generateReport());
+```
+
+### Dictionary Comparison Test
+
+```java
+// Test with dictionary ON
+TestRunner runnerOn = new TestRunner(webSocket)
+    .configure(true, false)
+    .setCycles(10)
+    .setInterval(5000);
+runnerOn.addTask(new TextToggleTask(webSocket, "text1", "text2", 100));
+TestRunner.TestResults resultsOn = runnerOn.run();
+
+// Reset WebSocket state
+webSocket = new WebSocket();
+
+// Test with dictionary OFF
+TestRunner runnerOff = new TestRunner(webSocket)
+    .configure(false, false)
+    .setCycles(10)
+    .setInterval(5000);
+runnerOff.addTask(new TextToggleTask(webSocket, "text1", "text2", 100));
+TestRunner.TestResults resultsOff = runnerOff.run();
+
+// Compare results
+System.out.println("Dictionary ON:  " + resultsOn.getTotalBytesSent() + " bytes");
+System.out.println("Dictionary OFF: " + resultsOff.getTotalBytesSent() + " bytes");
+```
+
+### External Dictionary Tool
+
+```bash
+# Export patterns to JSON file
+java -cp ponysdk.jar com.ponysdk.core.server.websocket.DictionaryExtractorTool export patterns.json
+
+# Import patterns from JSON file
+java -cp ponysdk.jar com.ponysdk.core.server.websocket.DictionaryExtractorTool import patterns.json
+```
+
+## Test Results Format
+
+```
+=== Test Results ===
+Configuration: Dictionary=ON, Prediction=OFF, Cycles=10
+Network: 2847 bytes, 63 frames
+Memory: Increase=661 KB, Peak=46123 KB
+Latency: 234.56 ms total
+Frame Types:
+  TYPE_UPDATE: 20
+  TEXT: 20
+  END: 23
+```
+
+## Running Tests
+
+```bash
+# Run all WebSocket tests
+./gradlew :ponysdk:test --tests "*WebSocketTest"
+
+# Run dictionary extractor tests
+./gradlew :ponysdk:test --tests "*DictionaryExtractorTest"
+```
+
+## Design Principles
+
+1. **Non-invasive Monitoring**: Uses WebSocket.Listener interface for monitoring without modifying production code
+2. **Deterministic Testing**: Task-based approach for reproducible results
+3. **Configurable**: Supports different test configurations (dictionary ON/OFF, prediction ON/OFF)
+4. **Comprehensive Metrics**: Network, memory, and latency measurements
+5. **Extensible**: Easy to add new test tasks and metrics
+
+## Next Steps
+
+1. **Implement Dynamic Data Handling**: Create parameterization system for variable content
+2. **Browser-Side Latency**: Measure actual client-side processing time
+3. **Extend Task Types**: Add more realistic UI interaction patterns
+4. **Performance Baselines**: Establish benchmark metrics for regression testing
+5. **Integration Tests**: Add tests with real browser interactions

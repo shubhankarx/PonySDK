@@ -23,21 +23,16 @@
 
 package com.ponysdk.core.server.websocket;
 
-import java.io.IOException;
-import java.io.StringReader;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-import java.util.Collections;
-
-import javax.json.JsonArray;
-import javax.json.JsonObject;
-import javax.json.JsonObjectBuilder;
-import javax.json.JsonReader;
-import javax.json.Json;
+import com.ponysdk.core.model.ClientToServerModel;
+import com.ponysdk.core.model.ServerToClientModel;
+import com.ponysdk.core.model.ValueTypeModel;
+import com.ponysdk.core.model.WidgetType;
+import com.ponysdk.core.server.application.ApplicationConfiguration;
+import com.ponysdk.core.server.application.ApplicationManager;
+import com.ponysdk.core.server.application.UIContext;
+import com.ponysdk.core.server.context.CommunicationSanityChecker;
+import com.ponysdk.core.server.stm.TxnContext;
+import com.ponysdk.core.ui.basic.PObject;
 import org.eclipse.jetty.util.component.Container;
 import org.eclipse.jetty.websocket.api.Session;
 import org.eclipse.jetty.websocket.api.StatusCode;
@@ -47,22 +42,17 @@ import org.eclipse.jetty.websocket.servlet.ServletUpgradeRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.ponysdk.core.model.ClientToServerModel;
-import com.ponysdk.core.model.ServerToClientModel;
-import com.ponysdk.core.model.ValueTypeModel;
-import com.ponysdk.core.server.application.ApplicationConfiguration;
-import com.ponysdk.core.server.application.ApplicationManager;
-import com.ponysdk.core.server.application.UIContext;
-import com.ponysdk.core.server.context.CommunicationSanityChecker;
-import com.ponysdk.core.server.stm.TxnContext;
-import com.ponysdk.core.ui.basic.PObject;
+import javax.json.*;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
 //import com.ponysdk.core.server.PScheduler;
 
 public class WebSocket implements WebSocketListener, WebsocketEncoder {
@@ -87,9 +77,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private long lastSentPing;
     
     // Dictionary compression settings (enabled by default)
-    private final ModelValueDictionary dictionary = new ModelValueDictionary(1);
+    private final ModelValueDictionary dictionary = new ModelValueDictionary(2);
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
-    private static final int BATCH_THRESHOLD = 10;
+    private static final int BATCH_THRESHOLD = 2; // Reduced to capture button click patterns
     private boolean dictionaryEnabled = true; // Enabled by default
 
     // -- Start of Semantic Pattern Matching for Prediction --
@@ -101,14 +91,101 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     // A lock to ensure thread-safe access to the prediction buffer.
     private final Object predictionLock = new Object();
     private final List<List<String>> accumulatedPatterns = Collections.synchronizedList(new ArrayList<>());
+    
+    // Widget Interaction Sequence Tracking for Trie Prediction
+    // ========================================================
+    private final List<String> widgetInteractionSequence = new ArrayList<>(); // Sequence of widget keys: ["PButton#11", "PLabel#22", "PCheckBox#33"]
+    private final Map<String, List<ModelValuePair>> widgetMessagePatterns = new HashMap<>(); // Complete message patterns per widget
+    private final Map<Integer, String> widgetTypeById = new HashMap<>(); // Widget ID to type mapping
+    private String currentWidgetKey = null; // Current widget being processed: "PButton#11"
+    private String currentWidgetType = null; // Current widget type: "PButton"
+    private Integer currentWidgetId = null; // Current widget ID: 11
+    private final List<ModelValuePair> currentWidgetMessages = new ArrayList<>(); // Messages for current widget
+    private String lastPredictedWidget = null; // Last widget we predicted for validation
+    
+    // Thread safety for widget interaction tracking
+    private final Object widgetSequenceLock = new Object();
 
 
-    // Represents a node in our semantic pattern Trie.
+    /**
+     * WidgetInteractionTrieNode - Enhanced trie node for widget interaction sequence prediction
+     * 
+     * ARCHITECTURE CHANGE:
+     * - OLD: Stored individual ModelValuePair patterns like [TYPE_UPDATE=11, END_OF_PROCESSING=null]
+     * - NEW: Stores widget interaction sequences like ["PButton#11", "PLabel#22", "PCheckBox#33"]
+     *        + Complete message patterns for each widget
+     * 
+     * WHAT THIS STORES:
+     * - Widget interaction sequences (keys in trie paths)
+     * - Complete message patterns for each widget interaction (values at nodes)
+     * - Prediction data for sequence completion
+     */
+    private static final class WidgetTrieNode {
+        // Children map widget keys to next nodes in sequence
+        final Map<String, WidgetTrieNode> children = new HashMap<>();
+        
+        // Terminal node marker
+        boolean isEndOfSequence = false;
+        
+        // Complete message pattern for this widget (what to send when predicting)
+        List<ModelValuePair> completeMessagePattern = null;
+        
+        // Widget interaction sequence that led to this node
+        List<String> completeWidgetSequence = null;
+        
+        // Frequency tracking for learning
+        int sequenceFrequency = 0;
+    }
+    
+    // Root of widget interaction trie
+    private static final WidgetTrieNode WIDGET_TRIE = new WidgetTrieNode();
+    
+    /**
+     * TrieNode - Fundamental building block of our pattern prediction trie
+     * 
+     * WHAT IS A TRIE?
+     * A trie (prefix tree) is a tree where each node represents a single element in a sequence.
+     * Paths from root to leaf represent complete sequences. This enables O(k) operations where
+     * k is the sequence length, regardless of how many patterns are stored.
+     * 
+     * WHY TRIE FOR THIS USE CASE?
+     * 1. Prefix Matching: O(k) to check if current UI actions match start of any known pattern
+     * 2. Pattern Completion: Given prefix "PButton->PLabel", instantly find all possible completions
+     * 3. Space Efficiency: Common prefixes share nodes (e.g., many patterns starting with "PButton")
+     * 4. Dynamic Learning: Add new patterns without restructuring existing data
+     * 
+     * DESIGN DECISIONS:
+     * - Separate maps for String vs ModelValuePair: Prevents type confusion and key collisions
+     * - HashMap over TreeMap: We need O(1) child access, not sorted order
+     * - No data in nodes: We only care about structure for pattern matching
+     * - Store complete patterns at terminals: Enables pattern retrieval for analysis
+     * 
+     * EXAMPLE STRUCTURE:
+     * If we have patterns [PButton->PLabel->PCheckBox] and [PButton->PLabel->PTextBox]:
+     * 
+     *              root
+     *               |
+     *            PButton
+     *               |
+     *             PLabel
+     *            /      \
+     *      PCheckBox   PTextBox
+     *         (end)      (end)
+     */
     private static final class TrieNode {
-        // Each child represents the next component type in a potential pattern.
-        final java.util.Map<String, TrieNode> child = new java.util.HashMap<>();
-        // Marks the end of a complete, known 3-item pattern (e.g., a-b-c).
-        boolean isTerminal;
+        // Children nodes - separate maps prevent key collision between types
+        final Map<String, TrieNode> stringChildren = new HashMap<>();
+        final Map<String, TrieNode> modelValuePairChildren = new HashMap<>();
+        
+        // Marks terminal nodes (complete patterns)
+        boolean isEndOfPattern = false;
+        
+        // Store complete patterns at terminals for retrieval/analysis
+        List<String> completeStringPattern = null;
+        List<ModelValuePair> completeModelValuePattern = null;
+        
+        // Pattern frequency for adaptive learning (optional enhancement)
+        int patternFrequency = 0;
     }
 
     // The root of our Trie, holding all known semantic patterns.
@@ -131,57 +208,575 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         initialPatterns.add(Arrays.asList("PScript", "PLabel", "PScript"));
         initialPatterns.add(Arrays.asList("PFileUpload", "PButton", "PLabel"));
 
-        buildSemanticPatternTrie(initialPatterns);
+        buildSemanticPatternTrieFromStrings(initialPatterns);
         // Log the constructed Trie patterns at startup for easy verification.
-        PRED.info("Dumping registered prediction patterns:");
+        PRED.info("=== STARTUP TRIE SYSTEM INITIALIZED ===");
+        PRED.info("Legacy String Trie: {} initial patterns loaded", initialPatterns.size());
+        PRED.info("Widget Interaction Trie: Ready for learning");
+        PRED.info("Dictionary Compression: Enabled (threshold=2)");
+        PRED.info("Dumping initial string patterns:");
         dumpTrie(DICT_TRIE, "");
+        PRED.info("Widget Interaction Trie: (empty - will learn from interactions)");
+        dumpWidgetTrie(WIDGET_TRIE, "", "");
+        PRED.info("=== END STARTUP TRIE SYSTEM DUMP ===");
     }
 
-    // Constructs the Trie from a list of defined patterns.
-    private static void buildSemanticPatternTrie(final List<List<String>> patterns) {
-        for (final List<String> p : patterns) {
-            TrieNode n = DICT_TRIE;
-            for (final String ev : p) {
-                // Creates the path in the trie for the sequence of component types.
-                n = n.child.computeIfAbsent(ev, k -> new TrieNode());
+    /**
+     * Builds trie from string patterns representing UI component sequences.
+     * 
+     * ALGORITHM:
+     * For each pattern [A, B, C]:
+     * 1. Start at root
+     * 2. For each element, create/navigate to child node
+     * 3. Mark final node as pattern end
+     * 4. Store complete pattern for retrieval
+     * 
+     * EXAMPLE:
+     * Input: [["PButton", "PLabel", "PCheckBox"], 
+     *         ["PButton", "PLabel", "PTextBox"],
+     *         ["PButton", "PTextArea", "PSubmit"]]
+     * 
+     * Creates trie:
+     *           root
+     *            |
+     *         PButton
+     *         /      \
+     *     PLabel    PTextArea
+     *     /    \        \
+     * PCheckBox PTextBox PSubmit
+     *   (end)    (end)    (end)
+     * 
+     * EDGE CASES:
+     * - Null/empty patterns: Skipped silently
+     * - Duplicate patterns: Harmlessly overwrites (idempotent)
+     * - Single element patterns: Allowed (though we focus on triplets)
+     * - Patterns sharing prefixes: Properly share nodes
+     * 
+     * TIME COMPLEXITY: O(n * k) where n = patterns, k = pattern length
+     * SPACE COMPLEXITY: O(total unique nodes) ≤ O(n * k)
+     * 
+     * @param patterns List of string sequences to add to trie
+     */
+    static void buildSemanticPatternTrieFromStrings(final List<List<String>> patterns) {
+        if (patterns == null) return;
+        
+        for (final List<String> pattern : patterns) {
+            // Skip invalid patterns
+            if (pattern == null || pattern.isEmpty()) {
+                PRED.debug("Skipping null/empty pattern");
+                continue;
             }
-            // Marks the final node of the sequence as a valid, complete triplet.
-            n.isTerminal = true;
+            
+            TrieNode currentNode = DICT_TRIE;
+            
+            // Build path for this pattern
+            for (final String element : pattern) {
+                if (element == null) {
+                    PRED.warn("Skipping pattern with null element: {}", pattern);
+                    break; // Don't add incomplete patterns
+                }
+                
+                // computeIfAbsent: atomic get-or-create operation
+                currentNode = currentNode.stringChildren.computeIfAbsent(
+                    element, k -> new TrieNode());
+            }
+            
+            // Mark pattern end and store complete pattern
+            currentNode.isEndOfPattern = true;
+            currentNode.completeStringPattern = new ArrayList<>(pattern); // Defensive copy
+            currentNode.patternFrequency++; // Track usage for adaptive learning
+            
+            PRED.debug("Added string pattern to trie: {} (frequency: {})", 
+                      pattern, currentNode.patternFrequency);
         }
     }
 
-    // Checks if a sequence of component types is a valid prefix of any known triplet.
-    private boolean isPrefixOfKnownTriplet(final List<String> prefix) {
-        if (prefix.isEmpty()) return true; // An empty sequence is a prefix to all patterns.
-        TrieNode n = DICT_TRIE;
-        for (final String s : prefix) {
-            n = n.child.get(s);
-            // If at any point the path breaks, it's not a valid prefix.
-            if (n == null) return false;
-        }
-        return true; // The sequence is a valid prefix.
+    /**
+     * Legacy method for backward compatibility.
+     * Delegates to buildSemanticPatternTrieFromStrings.
+     * 
+     * @param patterns String patterns to add to trie
+     */
+    static void buildSemanticPatternTrie(final List<List<String>> patterns) {
+        buildSemanticPatternTrieFromStrings(patterns);
     }
 
-    // Checks if a sequence of exactly three component types is a known, complete triplet.
-    private boolean isKnownTriplet(final List<String> seq) {
-        if (seq.size() != 3) return false; // We are only interested in 3-item patterns.
-        TrieNode n = DICT_TRIE;
-        for (final String s : seq) {
-            n = n.child.get(s);
-            if (n == null) return false;
+    /**
+     * Builds trie from ModelValuePair patterns for dictionary-based prediction.
+     * 
+     * ALGORITHM:
+     * 1. Validate each pattern (must be exactly 3 elements)
+     * 2. Convert each ModelValuePair to string key
+     * 3. Build trie path using these keys
+     * 4. Mark terminal and store pattern
+     * 
+     * EXAMPLE:
+     * Input: [[ModelValuePair(TYPE_CREATE, 1),
+     *          ModelValuePair(WIDGET_TYPE, "PButton"),
+     *          ModelValuePair(WIDGET_ID, 123)],
+     *         [ModelValuePair(TYPE_CREATE, 1),
+     *          ModelValuePair(WIDGET_TYPE, "PButton"),
+     *          ModelValuePair(WIDGET_ID, 456)]]
+     * 
+     * Creates trie with keys:
+     *                  root
+     *                   |
+     *            [TYPE_CREATE:1]
+     *                   |
+     *           [WIDGET_TYPE:PButton]
+     *               /         \
+     *     [WIDGET_ID:123]  [WIDGET_ID:456]
+     *          (end)           (end)
+     * 
+     * INTEGRATION WITH DICTIONARY:
+     * - Dictionary detects frequent patterns
+     * - Those patterns are added here for prediction
+     * - Future similar sequences can be predicted/optimized
+     * 
+     * EDGE CASES:
+     * - Non-triplet patterns: Skipped (we only handle size 3)
+     * - Null patterns/pairs: Validated and skipped
+     * - Key generation failures: Logged and pattern skipped
+     * 
+     * @param patterns List of ModelValuePair triplets to add
+     */
+    static void buildSemanticPatternTrieFromPairs(final List<List<ModelValuePair>> patterns) {
+        if (patterns == null) return;
+        
+        for (final List<ModelValuePair> pattern : patterns) {
+            // Strict validation - only triplets
+            if (pattern == null || pattern.size() != 3) {
+                if (pattern != null && pattern.size() > 0) {
+                    PRED.debug("Skipping non-triplet pattern of size: {}", pattern.size());
+                }
+                continue;
+            }
+            
+            // Validate all pairs are non-null
+            boolean hasNullPair = false;
+            for (ModelValuePair pair : pattern) {
+                if (pair == null) {
+                    hasNullPair = true;
+                    break;
+                }
+            }
+            if (hasNullPair) {
+                PRED.warn("Skipping pattern with null ModelValuePair");
+                continue;
+            }
+            
+            TrieNode currentNode = DICT_TRIE;
+            
+            // Build trie path
+            try {
+                for (final ModelValuePair pair : pattern) {
+                    final String key = generateTrieKey(pair);
+                    currentNode = currentNode.modelValuePairChildren.computeIfAbsent(
+                        key, k -> new TrieNode());
+                }
+                
+                // Mark terminal and store pattern
+                currentNode.isEndOfPattern = true;
+                currentNode.completeModelValuePattern = new ArrayList<>(pattern); // Defensive copy
+                currentNode.patternFrequency++;
+                
+                PRED.debug("Added ModelValuePair pattern to trie: [{}] (frequency: {})", 
+                          pattern.stream()
+                                 .map(WebSocket::generateTrieKey)
+                                 .collect(Collectors.joining(" -> ")),
+                          currentNode.patternFrequency);
+                
+            } catch (Exception e) {
+                PRED.error("Failed to add pattern to trie: {}", pattern, e);
+            }
         }
-        // It's only a known triplet if the final node is marked as terminal.
-        return n.isTerminal;
     }
 
-    // Recursively prints the contents of the Trie to the console for debugging.
-    private static void dumpTrie(final TrieNode node, final String prefix) {
-        // Check if the current prefix itself marks the end of a pattern.
-        if (node.isTerminal) {
-            PRED.info("Pattern: {} [TRIPLET]", prefix);
+    /**
+     * Generates deterministic string key for ModelValuePair trie navigation.
+     * 
+     * ALGORITHM:
+     * 1. Extract model enum and value from pair
+     * 2. Create key as "MODEL_NAME:value_string"
+     * 3. Handle null values explicitly as "null" string
+     * 
+     * EXAMPLE:
+     * - Input: ModelValuePair(WIDGET_TYPE, "PButton") -> Output: "WIDGET_TYPE:PButton"
+     * - Input: ModelValuePair(WIDGET_ID, 12345) -> Output: "WIDGET_ID:12345"
+     * - Input: ModelValuePair(TEXT, null) -> Output: "TEXT:null"
+     * 
+     * EDGE CASES HANDLED:
+     * - Null values: Converted to "null" string to avoid NPE
+     * - Special characters: Relies on toString() which handles most cases
+     * - Empty strings: Preserved as-is ("TEXT:" for empty string value)
+     * 
+     * OPTIMIZATION:
+     * - StringBuilder pre-sized based on typical key length
+     * - Single pass construction, no string concatenation
+     * - Could cache results for frequently used pairs (future enhancement)
+     * 
+     * @param pair The ModelValuePair to convert to a trie key
+     * @return Deterministic string key for trie navigation
+     */
+    private static String generateTrieKey(final ModelValuePair pair) {
+        if (pair == null) {
+            throw new IllegalArgumentException("Cannot generate key for null ModelValuePair");
         }
-        for (final java.util.Map.Entry<String, TrieNode> entry : node.child.entrySet()) {
-            dumpTrie(entry.getValue(), prefix.isEmpty() ? entry.getKey() : prefix + " -> " + entry.getKey());
+        
+        final ServerToClientModel model = pair.getModel();
+        final Object value = pair.getValue();
+        
+        // Pre-size StringBuilder for efficiency (model name + ":" + typical value)
+        final StringBuilder keyBuilder = new StringBuilder(model.name().length() + 20);
+        
+        // Use model name for human readability in logs
+        keyBuilder.append(model.name()).append(':');
+        
+        // Handle null values explicitly
+        if (value == null) {
+            keyBuilder.append("null");
+        } else if (value instanceof String && ((String) value).isEmpty()) {
+            // Preserve empty strings (don't convert to "null")
+            // Key will end with ':' which is fine
+        } else {
+            keyBuilder.append(value.toString());
+        }
+        
+        return keyBuilder.toString();
+    }
+
+    /**
+     * Checks if string sequence is a prefix of any known pattern.
+     * 
+     * ALGORITHM:
+     * 1. Handle empty prefix (always true)
+     * 2. Navigate trie following prefix elements
+     * 3. Return false if path breaks, true if complete
+     * 
+     * EXAMPLE 1 (Valid Prefix):
+     * Known pattern: ["PButton", "PLabel", "PCheckBox"]
+     * Input: ["PButton", "PLabel"]
+     * Process:
+     *   - Start at root
+     *   - Navigate to root->PButton (exists)
+     *   - Navigate to PButton->PLabel (exists)
+     *   - Return true (valid prefix)
+     * 
+     * EXAMPLE 2 (Invalid Prefix):
+     * Known patterns: Same as above
+     * Input: ["PButton", "PTextArea"]
+     * Process:
+     *   - Start at root
+     *   - Navigate to root->PButton (exists)
+     *   - Navigate to PButton->PTextArea (doesn't exist)
+     *   - Return false (invalid prefix)
+     * 
+     * USE CASE: Decide whether to buffer more elements or send immediately
+     * 
+     * EDGE CASES:
+     * - Null input: Treated as empty (returns true)
+     * - Empty list: Returns true (prefix of everything)
+     * - Null elements: Returns false at that point
+     * - Prefix longer than any pattern: Will return false
+     * 
+     * TIME COMPLEXITY: O(k) where k = prefix length
+     * SPACE COMPLEXITY: O(1) - no additional space
+     * 
+     * @param prefix Sequence to check
+     * @return true if prefix of any known pattern
+     */
+    boolean isPrefixOfKnownTriplet(final List<String> prefix) {
+        // Empty prefix matches all patterns
+        if (prefix == null || prefix.isEmpty()) {
+            return true;
+        }
+        
+        TrieNode currentNode = DICT_TRIE;
+        
+        // Navigate trie following prefix
+        for (final String element : prefix) {
+            // Handle null elements
+            if (element == null) {
+                PRED.debug("Null element in prefix at position {}", prefix.indexOf(element));
+                return false;
+            }
+            
+            // Try to navigate to child
+            currentNode = currentNode.stringChildren.get(element);
+            if (currentNode == null) {
+                // Path doesn't exist
+                return false;
+            }
+        }
+        
+        // Successfully navigated entire prefix
+        return true;
+    }
+
+    /**
+     * Checks if ModelValuePair sequence is a prefix of any known pattern.
+     * 
+     * ALGORITHM: Same as string version but with key generation step
+     * 
+     * EXAMPLE:
+     * Known pattern: [TYPE_CREATE:1 -> WIDGET_TYPE:PButton -> WIDGET_ID:123]
+     * Input: [ModelValuePair(TYPE_CREATE, 1), ModelValuePair(WIDGET_TYPE, "PButton")]
+     * Process:
+     *   - Generate key "TYPE_CREATE:1", navigate (exists)
+     *   - Generate key "WIDGET_TYPE:PButton", navigate (exists)  
+     *   - Return true (valid prefix)
+     * 
+     * INTEGRATION: Used by dictionary system to predict if current batch
+     * will match a known pattern, enabling proactive optimization.
+     * 
+     * EDGE CASES:
+     * - Null pair in sequence: Returns false
+     * - Key generation failure: Returns false
+     * - Empty/null input: Returns true
+     * 
+     * @param prefix ModelValuePair sequence to check
+     * @return true if prefix of any known pattern
+     */
+    boolean isPrefixOfKnownTripletFromPairs(final List<ModelValuePair> prefix) {
+        // Empty prefix matches all patterns
+        if (prefix == null || prefix.isEmpty()) {
+            return true;
+        }
+        
+        TrieNode currentNode = DICT_TRIE;
+        
+        // Navigate trie using generated keys
+        for (final ModelValuePair pair : prefix) {
+            // Validate pair
+            if (pair == null) {
+                PRED.debug("Null ModelValuePair in prefix");
+                return false;
+            }
+            
+            try {
+                final String key = generateTrieKey(pair);
+                currentNode = currentNode.modelValuePairChildren.get(key);
+                
+                if (currentNode == null) {
+                    // Path doesn't exist
+                    return false;
+                }
+            } catch (Exception e) {
+                PRED.error("Failed to generate key for pair: {}", pair, e);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Checks if a complete string triplet exists in the trie.
+     * 
+     * ALGORITHM:
+     * 1. Validate exactly 3 elements
+     * 2. Navigate complete path in trie
+     * 3. Check if final node is marked as pattern end
+     * 
+     * EXAMPLE 1 (Known Pattern):
+     * Trie contains: ["PButton", "PLabel", "PCheckBox"]
+     * Input: ["PButton", "PLabel", "PCheckBox"]
+     * Result: true (exact match found)
+     * 
+     * EXAMPLE 2 (Unknown Pattern):
+     * Trie contains: ["PButton", "PLabel", "PCheckBox"]
+     * Input: ["PButton", "PLabel", "PTextBox"]
+     * Result: false (path exists but not marked as complete pattern)
+     * 
+     * EXAMPLE 3 (Partial Path):
+     * Trie contains: ["PButton", "PLabel", "PCheckBox"]
+     * Input: ["PButton", "PLabel", "PNonExistent"]
+     * Result: false (path breaks at third element)
+     * 
+     * USE CASE: When receiving third element, check if pattern is known
+     * to decide whether to learn it as new pattern.
+     * 
+     * EDGE CASES:
+     * - Null/empty input: Returns false
+     * - Non-triplet size: Returns false immediately
+     * - Null elements: Returns false when encountered
+     * - Path exists but not terminal: Returns false
+     * 
+     * TIME COMPLEXITY: O(3) = O(1) constant for triplets
+     * 
+     * @param seq String sequence to check (must be size 3)
+     * @return true if exact triplet exists in trie
+     */
+    boolean isKnownTriplet(final List<String> seq) {
+        // Input validation
+        if (seq == null || seq.size() != 3) {
+            PRED.debug("Invalid triplet size: {}", seq == null ? "null" : seq.size());
+            return false;
+        }
+        
+        // Check for null elements
+        for (int i = 0; i < 3; i++) {
+            if (seq.get(i) == null) {
+                PRED.debug("Null element at position {} in triplet", i);
+                return false;
+            }
+        }
+        
+        PRED.debug("Checking if triplet is known: {}", seq);
+        TrieNode currentNode = DICT_TRIE;
+        
+        // Navigate the complete triplet path
+        for (final String element : seq) {
+            currentNode = currentNode.stringChildren.get(element);
+            if (currentNode == null) {
+                PRED.debug("Path broken at element: {}", element);
+                return false;
+            }
+        }
+        
+        // Check if this node represents a complete pattern
+        final boolean isKnown = currentNode.isEndOfPattern;
+        PRED.debug("Triplet {} {}", seq, isKnown ? "EXISTS" : "NOT FOUND");
+        
+        return isKnown;
+    }
+
+    /**
+     * Checks if a complete ModelValuePair triplet exists in the trie.
+     * 
+     * ALGORITHM: Same as string version but with key generation
+     * 
+     * EXAMPLE:
+     * Trie contains pattern from dictionary ID #5:
+     * [TYPE_CREATE:1 -> WIDGET_TYPE:PButton -> WIDGET_ID:123]
+     * 
+     * Input: [ModelValuePair(TYPE_CREATE, 1),
+     *         ModelValuePair(WIDGET_TYPE, "PButton"),
+     *         ModelValuePair(WIDGET_ID, 123)]
+     * Result: true (pattern exists)
+     * 
+     * DICTIONARY INTEGRATION:
+     * - Dictionary records frequent patterns with IDs
+     * - Those patterns are added to trie
+     * - This method checks if new pattern already exists
+     * - Prevents duplicate entries in prediction system
+     * 
+     * EDGE CASES:
+     * - Null pairs: Returns false
+     * - Key generation errors: Caught and returns false
+     * - Wrong size: Returns false immediately
+     * 
+     * @param seq ModelValuePair triplet to check
+     * @return true if exact triplet exists in trie
+     */
+    boolean isKnownTripletFromPairs(final List<ModelValuePair> seq) {
+        // Size validation
+        if (seq == null || seq.size() != 3) {
+            PRED.debug("Invalid ModelValuePair triplet size: {}", 
+                      seq == null ? "null" : seq.size());
+            return false;
+        }
+        
+        // Null element validation
+        for (int i = 0; i < 3; i++) {
+            if (seq.get(i) == null) {
+                PRED.debug("Null ModelValuePair at position {}", i);
+                return false;
+            }
+        }
+        
+        PRED.debug("Checking if ModelValuePair triplet is known");
+        TrieNode currentNode = DICT_TRIE;
+        
+        // Navigate using generated keys
+        for (final ModelValuePair pair : seq) {
+            try {
+                final String key = generateTrieKey(pair);
+                currentNode = currentNode.modelValuePairChildren.get(key);
+                
+                if (currentNode == null) {
+                    PRED.debug("Path broken at key: {}", key);
+                    return false;
+                }
+            } catch (Exception e) {
+                PRED.error("Key generation failed for pair: {}", pair, e);
+                return false;
+            }
+        }
+        
+        return currentNode.isEndOfPattern;
+    }
+
+    /**
+     * Recursively dumps trie structure for debugging and monitoring.
+     * 
+     * OUTPUT EXAMPLE:
+     * Pattern: PButton -> PLabel -> PCheckBox [TRIPLET]
+     * Pattern: PButton -> PLabel -> PTextBox [TRIPLET]
+     * Pattern: [TYPE_CREATE:1] -> [WIDGET_TYPE:PButton] -> [WIDGET_ID:123] [TRIPLET]
+     * 
+     * ALGORITHM:
+     * 1. If current node is terminal, print pattern
+     * 2. Recursively visit all children
+     * 3. Build path string as we traverse
+     * 
+     * FORMAT:
+     * - String patterns: A -> B -> C [TRIPLET]
+     * - ModelValuePair: [KEY1] -> [KEY2] -> [KEY3] [TRIPLET]
+     * - Frequency shown if > 1
+     * 
+     * USE CASES:
+     * - Debug pattern learning
+     * - Monitor trie growth
+     * - Verify pattern storage
+     * - Analyze pattern distribution
+     * 
+     * PERFORMANCE WARNING:
+     * O(n) where n = total nodes in trie.
+     * Use sparingly in production.
+     * 
+     * @param node Current node in traversal
+     * @param prefix Path from root to current node
+     */
+    static void dumpTrie(final TrieNode node, final String prefix) {
+        if (node == null) {
+            PRED.info("TRIE DEBUG: Node is null at prefix: '{}'", prefix);
+            return;
+        }
+        
+        // Debug root node
+        if (prefix.isEmpty()) {
+            PRED.info("TRIE DEBUG: Starting trie dump from root");
+            PRED.info("TRIE DEBUG: Root has {} string children, {} modelValuePair children", 
+                     node.stringChildren.size(), node.modelValuePairChildren.size());
+        }
+        
+        // Print if this is a complete pattern
+        if (node.isEndOfPattern) {
+            String frequencyInfo = node.patternFrequency > 1 ? 
+                " (frequency: " + node.patternFrequency + ")" : "";
+            PRED.info("Pattern: {} [TRIPLET]{}", prefix, frequencyInfo);
+        }
+        
+        // Traverse string-based children
+        for (final Map.Entry<String, TrieNode> entry : node.stringChildren.entrySet()) {
+            final String childPrefix = prefix.isEmpty() ? 
+                entry.getKey() : 
+                prefix + " -> " + entry.getKey();
+            dumpTrie(entry.getValue(), childPrefix);
+        }
+        
+        // Traverse ModelValuePair-based children (with brackets)
+        for (final Map.Entry<String, TrieNode> entry : node.modelValuePairChildren.entrySet()) {
+            final String childPrefix = prefix.isEmpty() ? 
+                "[" + entry.getKey() + "]" : 
+                prefix + " -> [" + entry.getKey() + "]";
+            dumpTrie(entry.getValue(), childPrefix);
+        }
+        
+        // Debug if no children and not end
+        if (prefix.isEmpty() && node.stringChildren.isEmpty() && node.modelValuePairChildren.isEmpty() && !node.isEndOfPattern) {
+            PRED.info("TRIE DEBUG: Root node is completely empty!");
         }
     }
 
@@ -250,7 +845,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                         }
                     }
                 }
-            }, 15000); // 15 seconds delay
+            }, 2000); // 2 seconds delay - reduced for testing pattern learning
             /*
             // Schedule a periodic task to dump the Trie every 30 seconds for debugging.
             PScheduler.scheduleAtFixedRate(() -> {
@@ -268,25 +863,51 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             
             // Schedule a periodic task to dump the Trie every 30 seconds for debugging.
             // Using java.util.Timer
-            new java.util.Timer(true).scheduleAtFixedRate(new java.util.TimerTask() {
+            log.info("Setting up periodic trie dump timer for UIContext #{} (30s interval)", uiContext.getID());
+            new java.util.Timer("TrieDumpTimer-UIContext" + uiContext.getID(), true).scheduleAtFixedRate(new java.util.TimerTask() {
                 @Override
                 public void run() {
                     if (isAlive()) {
                         uiContext.acquire();
                         try {
-                            for (int id : dictionary.getPatternIds()) {
+                            //for (int id : dictionary.getPatternIds()) {
+                            log.info("=== PERIODIC TRIE DUMP STARTING (Timer-0 thread) ===");
+                            PRED.info("DEBUG: Running periodic dictionary dump...");
+                            Set<Integer> patternIds = dictionary.getPatternIds();
+                            PRED.info("DEBUG: Found {} patterns in dictionary", patternIds.size());
+                            
+                            if (patternIds.isEmpty()) {
+                                PRED.info("DEBUG: Dictionary is empty! Check if patterns are being recorded.");
+                                PRED.info("DEBUG: Dictionary enabled: {}", dictionaryEnabled);
+                                PRED.info("DEBUG: Current batch size: {}", currentBatch.size());
+                            }
+                            
+                            for (int id : patternIds) {
                                 List<ModelValuePair> pattern = dictionary.getPattern(id);
                                 String seq = pattern.stream()
                                     .map(p -> p.getModel().name())
                                     .collect(Collectors.joining(" -> "));
                                 PRED.info("Pattern #{}: {}", id, seq);
-                                }
-                                PRED.info("Dumping registered prediction patterns (periodic check):");
-                                dumpTrie(DICT_TRIE, "");
-                            /*
-                            PRED.info("Dumping registered prediction patterns (periodic check):");
+                            }
+                            
+                            // Always dump both tries regardless of dictionary contents
+                            PRED.info("=== PERIODIC TRIE SYSTEM DUMP ===");
+                            PRED.info("=== Legacy String Patterns ===");
                             dumpTrie(DICT_TRIE, "");
-                            */
+                            PRED.info("=== Widget Interaction Sequences ===");
+                            dumpWidgetTrie(WIDGET_TRIE, "", "");
+                            PRED.info("=== Widget Sequence Statistics ===");
+                            synchronized (widgetSequenceLock) {
+                                PRED.info("Current sequence length: {}", widgetInteractionSequence.size());
+                                PRED.info("Widget patterns stored: {}", widgetMessagePatterns.size());
+                                if (!widgetInteractionSequence.isEmpty()) {
+                                    PRED.info("Recent interactions: {}", 
+                                             widgetInteractionSequence.stream()
+                                                 .skip(Math.max(0, widgetInteractionSequence.size() - 5))
+                                                 .collect(Collectors.toList()));
+                                }
+                            }
+                            PRED.info("=== END PERIODIC TRIE SYSTEM DUMP ===");
                         } finally {
                             uiContext.release();
                         }
@@ -295,7 +916,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             }, 30000, 30000); // Delay and period in milliseconds
 
         } catch (final Exception e) {
-            log.error("Cannot process WebSocket instructions", e);
+            log.error("Error in onWebSocketConnect for UIContext #{}", uiContext != null ? uiContext.getID() : "null", e);
         }
     }
 
@@ -407,7 +1028,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 final String fullInstructionString = currentInstructionJson.toString();
 
                 // Log every instruction received
-                loggerIn.info("Received Instruction: {}", fullInstructionString);
+                //loggerIn.info("Received Instruction: {}", fullInstructionString);
 
                 // Extract the component type to check against our semantic patterns.
                 final String componentType = extractComponentType(fullInstructionString);
@@ -419,6 +1040,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     // If no type is found, it's an unknown format; flush buffer and send it alone.
                     log.warn("Unknown instruction format, cannot extract component type: {}. Sending individually.", fullInstructionString);
                     flushBufferedInstructions();
+
                     sendJsonPostRequestUsingHttpURLConnection(Arrays.asList(fullInstructionString));
                 }
 
@@ -542,10 +1164,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     @Override
     public void encode(final ServerToClientModel model, final Object value) {
+        Integer ref = null; // Move ref declaration here
+        PRED.info("Model S2C {} {}", model, value);
         if (UIContext.get() == null) {
             log.warn("encode in websocket without current ui context acquired", new Exception());
             uiContext.acquire();
             try {
+                PRED.info("Model S2C {} {}", model, value);
                 encode(model, value);
             } finally {
                 uiContext.release();
@@ -554,7 +1179,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         // For END frames, flush any pending batch first
-        if (dictionaryEnabled && model == ServerToClientModel.END && !currentBatch.isEmpty()) {
+        if (dictionaryEnabled && !currentBatch.isEmpty()) {
+            if (model == ServerToClientModel.END_OF_PROCESSING && currentBatch.size() == 2) {
+                PRED.info("Flushing batch with END_OF_PROCESSING");
+            }   
             flushCurrentBatch();
         }
 
@@ -575,6 +1203,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         // Process with dictionary for application frames
         try {
             final ModelValuePair pair = new ModelValuePair(model, value);
+            
+            // Track widget interaction data BEFORE dictionary processing
+            trackWidgetInteractionData(model, value);
+            
+            // Complete widget interaction on END_OF_PROCESSING
+            if (model == ServerToClientModel.END_OF_PROCESSING) {
+                completeCurrentWidgetInteraction();
+            }
             
             // Skip dictionary specific frames like DICTIONARY_*
             if (model == ServerToClientModel.DICTIONARY_PATTERN_START ||
@@ -614,12 +1250,15 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 Integer patternId = dictionary.getPatternId(testPattern);
                 if (patternId != null) {
                     // Use existing pattern reference
+                    PRED.info("Found existing pattern #{} for batch of {} elements - sending reference", patternId, testPattern.size());
                     if (loggerOut.isTraceEnabled())
                         loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
                     websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     currentBatch.clear();
                     return;
+                } else {
+                    PRED.debug("No existing pattern found for current batch of {} elements", testPattern.size());
                 }
                 
                 // Add to current batch and check threshold
@@ -642,16 +1281,40 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Check if a model is a critical control frame that should bypass dictionary
      */
     private boolean isControlFrame(final ServerToClientModel model) {
-        // treat any UINT31-typed model as protocol frame to bypass dictionary
-        if (model.getTypeModel() == ValueTypeModel.UINT31) return true;
+        // Only specific critical protocol frames should bypass dictionary
+        // DO NOT blanket exclude all UINT31 types as this prevents widget tracking!
         switch (model) {
+            // Core protocol frames
             case CREATE_CONTEXT:
             case OPTION_FORMFIELD_TABULATION:
             case HEARTBEAT_PERIOD:
             case HEARTBEAT:
             case ROUNDTRIP_LATENCY:
+            
+            // Handler management (but allow TYPE_CREATE/TYPE_UPDATE/etc.)
+            case TYPE_ADD_HANDLER:
+            case TYPE_REMOVE_HANDLER:
+            case HANDLER_TYPE:
+            
+            // Window/Frame management
+            case WINDOW_ID:
+            case FRAME_ID:
+            
+            // Function calls
+            case FUNCTION_ID:
+            
+            // Dictionary protocol (ironically these bypass dictionary)
+            case DICTIONARY_PATTERN_START:
+            case DICTIONARY_REFERENCE:
+            
+            // End markers
             case END:
                 return true;
+                
+            // IMPORTANT: Allow these UINT31 types through for dictionary/widget tracking:
+            // - TYPE_CREATE, TYPE_UPDATE, TYPE_ADD, TYPE_REMOVE (widget tracking)
+            // - WIDGET_ID, PARENT_OBJECT_ID (widget identification)
+            // - TYPE_GC (garbage collection patterns)
             default:
                 return false;
         }
@@ -818,6 +1481,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         void onIncomingText(String text);
 
         void onIncomingWebSocketFrame(int headerLength, int payloadLength);
+        
+        default void onFrameWriteSuccess() {
+            // Called when WebSocket frames are successfully acknowledged by the network layer
+        }
+        
+        default void onFrameWriteFailure(Throwable cause) {
+            // Called when WebSocket frame writing fails
+        }
 
     }
 
@@ -826,6 +1497,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * to ensure proper UI response cycle completion
      */
     private void flushCurrentBatch() {
+        Integer ref = null; // Declare ref here
         if (currentBatch.isEmpty()) return;
         
         try {
@@ -833,6 +1505,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 loggerOut.trace("UIContext #{} : Flushing batch of size {}", this.uiContext.getID(), currentBatch.size());
             
             // Check if batch has any TYPE_* instructions to ensure valid pattern
+            /*
             boolean hasTypeCommand = false;
             ServerToClientModel foundType = null;
             for (ModelValuePair pair : currentBatch) {
@@ -842,44 +1515,341 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     break;
                 }
             }
+            */
             
-            // Only try to save patterns that have a TYPE_* command to ensure proper replay
-            Integer newId = null;
+            // Only try to save patterns that have a TYPE_* command to ensure proper rexplay
+            //Integer newId = null;
+            /*
             if (hasTypeCommand) {
                 newId = dictionary.recordPattern(currentBatch);
                 PRED.debug("Recorded pattern {}: {}", newId, currentBatch);
-            }
+            } */
+            // Create a consistent copy for dictionary operations
+            List<ModelValuePair> snapshot = new ArrayList<>(currentBatch);   // <-- mutable copy for consistent equals()
+            PRED.debug("Trying to record pattern of size {}: {}", snapshot.size(), snapshot);
+            Integer newId = dictionary.recordPattern(snapshot);
             
             if (newId != null) {
+                PRED.info("Successfully recorded new pattern #{} with {} elements", newId, snapshot.size());
+            } else {
+                PRED.debug("Pattern not recorded - either exists or doesn't meet criteria");
+            }
+            // Widget Interaction Learning (SEPARATE from dictionary compression)
+            processWidgetInteraction(snapshot);
+            
+            if (newId != null) {
+                // Dictionary compression continues as before (unchanged)
+                PRED.debug("Dictionary recorded pattern #{} with {} elements", newId, snapshot.size());
                 // Send pattern definition to client
                 if (loggerOut.isTraceEnabled())
                     loggerOut.trace("UIContext #{} : Recording new pattern {} (size: {})", 
-                            this.uiContext.getID(), newId, currentBatch.size());
+                            this.uiContext.getID(), newId, snapshot.size());
                     
-                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
-                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
-                
-                // Send all frames in the pattern
-                for (ModelValuePair p : currentBatch) {
-                    websocketPusher.encode(p.getModel(), p.getValue());
-                    if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
-                }
-                
-                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
-                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_END, null);
-            } else {
-                // Send all frames directly without pattern recording
-                for (ModelValuePair p : currentBatch) {
+                // Send actual frames instead of dictionary pattern to ensure UI works
+                for (ModelValuePair p : snapshot) {
                     websocketPusher.encode(p.getModel(), p.getValue());
                     if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
                 }
             }
-        } catch (IOException e) {
-            log.error("Error flushing batch", e);
+            else if ((ref = dictionary.getPatternId(snapshot)) != null) {
+                // (re‑feed the trie in case you added new patterns at runtime)
+                List<ModelValuePair> pat = dictionary.getPattern(ref);
+                List<String> triplet = pat.stream()
+                    .map(p -> p.getModel().name())
+                    .limit(3)
+                    .collect(Collectors.toList());
+                if (triplet.size() == 3) {
+                    buildSemanticPatternTrieFromStrings(List.of(triplet));
+                    PRED.debug("Trie re‑fed existing triplet #{} : {}", ref, triplet);
+                }
+
+                // Tell the client "replay pattern #ref"
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, ref);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, ref);
+                
+                // Then close the message and flush it so the client actually applies it
+                websocketPusher.encode(ServerToClientModel.END, null);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.END, null);
+                flush0();
+
+                currentBatch.clear();
+                return;
+            }
+            else { // this is the original else block
+                // Send all frames directly without pattern recording
+                for (ModelValuePair p : snapshot) {
+                    websocketPusher.encode(p.getModel(), p.getValue());
+                    if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
+                }
+            }
+        } catch (final Exception e) {
+            log.error("Error in flushCurrentBatch for UIContext #{}", uiContext.getID(), e);
         } finally {
             currentBatch.clear();
         }
     }
+    
+    /**
+     * Process widget interaction for trie-based prediction.
+     * This is SEPARATE from dictionary compression.
+     * 
+     * ALGORITHM:
+     * 1. Detect widget events from message stream
+     * 2. Build complete message patterns for each widget
+     * 3. Track widget interaction sequences 
+     * 4. Learn sequences in trie when we have triplets
+     * 5. Predict next widget when we see pairs
+     */
+    private void processWidgetInteraction(final List<ModelValuePair> messageSequence) {
+        if (messageSequence == null || messageSequence.isEmpty()) return;
+        
+        synchronized (widgetSequenceLock) {
+            try {
+                // Complete current widget interaction if we have data
+                if (currentWidgetKey != null && !currentWidgetMessages.isEmpty()) {
+                    completeCurrentWidgetInteraction();
+                }
+                
+                PRED.debug("Processing widget interaction with {} messages", messageSequence.size());
+                
+            } catch (Exception e) {
+                PRED.error("Error processing widget interaction: {}", e.getMessage(), e);
+            }
+        }
+    }
+    
+    /**
+     * Track widget interaction data from individual encode() calls.
+     * Builds up widget information across multiple messages.
+     */
+    private void trackWidgetInteractionData(final ServerToClientModel model, final Object value) {
+        synchronized (widgetSequenceLock) {
+            try {
+                // Detect widget ID from TYPE_UPDATE or TYPE_CREATE
+                if (model == ServerToClientModel.TYPE_UPDATE && value instanceof Integer) {
+                    currentWidgetId = (Integer) value;
+                    PRED.debug("Detected widget ID: {}", currentWidgetId);
+                }
+                else if (model == ServerToClientModel.TYPE_CREATE && value instanceof Integer) {
+                    currentWidgetId = (Integer) value;
+                    PRED.debug("Detected new widget ID: {}", currentWidgetId);
+                }
+                
+                // Detect widget type (handle both Integer ordinals and String values)
+                else if (model == ServerToClientModel.WIDGET_TYPE && value != null) {
+                    if (value instanceof Integer) {
+                        // Convert enum ordinal to widget type name
+                        try {
+                            int ordinal = (Integer) value;
+                            currentWidgetType = WidgetType.fromRawValue(ordinal).name();
+                            PRED.debug("Detected widget type from ordinal {}: {}", ordinal, currentWidgetType);
+                        } catch (Exception e) {
+                            // Fallback for unknown ordinals
+                            currentWidgetType = "WIDGET_TYPE_" + value;
+                            PRED.debug("Unknown widget type ordinal {}, using fallback: {}", value, currentWidgetType);
+                        }
+                    } else {
+                        // Handle string values directly
+                        currentWidgetType = value.toString();
+                        PRED.debug("Detected widget type from string: {}", currentWidgetType);
+                    }
+                    
+                    // Store widget type mapping for future reference
+                    if (currentWidgetId != null) {
+                        widgetTypeById.put(currentWidgetId, currentWidgetType);
+                        currentWidgetKey = currentWidgetType + "#" + currentWidgetId;
+                        PRED.debug("Built widget key: {} and stored type mapping", currentWidgetKey);
+                    }
+                }
+                
+                // Add all messages to current widget (they'll be used for prediction)
+                currentWidgetMessages.add(new ModelValuePair(model, value));
+                
+            } catch (Exception e) {
+                PRED.error("Error tracking widget interaction data: {}", e.getMessage(), e);
+            }
+        }
+    }
+    
+    /**
+     * Complete the current widget interaction and add it to the sequence.
+     * This happens when we finish processing all messages for a widget.
+     */
+    private void completeCurrentWidgetInteraction() {
+        if (currentWidgetKey == null || currentWidgetMessages.isEmpty()) {
+            return;
+        }
+        
+        try {
+            // Store complete message pattern for this widget
+            widgetMessagePatterns.put(currentWidgetKey, new ArrayList<>(currentWidgetMessages));
+            
+            // Add widget to interaction sequence
+            widgetInteractionSequence.add(currentWidgetKey);
+            
+            PRED.info("Completed widget interaction: {} with {} messages", 
+                     currentWidgetKey, currentWidgetMessages.size());
+            
+            // Try to predict next widget (if we have 2 in sequence)
+            if (widgetInteractionSequence.size() >= 2) {
+                tryPredictNextWidget();
+            }
+            
+            // Validate previous prediction (if we had one)
+            if (lastPredictedWidget != null) {
+                validatePrediction();
+            }
+            
+            // Learn sequence pattern in trie (if we have 3 in sequence)
+            if (widgetInteractionSequence.size() >= 3) {
+                learnWidgetSequenceInTrie();
+            }
+            
+            // Reset current widget tracking
+            resetCurrentWidgetTracking();
+            
+        } catch (Exception e) {
+            PRED.error("Error completing widget interaction: {}", e.getMessage(), e);
+            resetCurrentWidgetTracking();
+        }
+    }
+    
+    /**
+     * Try to predict the next widget based on the current sequence.
+     */
+    private void tryPredictNextWidget() {
+        if (widgetInteractionSequence.size() < 2) return;
+        
+        try {
+            // Get last two widget interactions
+            int size = widgetInteractionSequence.size();
+            String widget1 = widgetInteractionSequence.get(size - 2);
+            String widget2 = widgetInteractionSequence.get(size - 1);
+            
+            // Look up prediction in trie
+            WidgetTrieNode node = WIDGET_TRIE.children.get(widget1);
+            if (node != null) {
+                node = node.children.get(widget2);
+                if (node != null && !node.children.isEmpty()) {
+                    // Found potential predictions - pick the most frequent one
+                    String prediction = node.children.entrySet().stream()
+                        .max((e1, e2) -> Integer.compare(e1.getValue().sequenceFrequency, e2.getValue().sequenceFrequency))
+                        .map(Map.Entry::getKey)
+                        .orElse(null);
+                    
+                    if (prediction != null) {
+                        lastPredictedWidget = prediction;
+                        PRED.info("PREDICTION: After [{}] -> [{}], predict [{}]", 
+                                 widget1, widget2, prediction);
+                        
+                        // Get complete message pattern for predicted widget
+                        List<ModelValuePair> predictedMessages = widgetMessagePatterns.get(prediction);
+                        if (predictedMessages != null) {
+                            PRED.info("Predicted message pattern: {}", predictedMessages);
+                            // TODO: Send prediction to client early
+                        }
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            PRED.error("Error predicting next widget: {}", e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Validate our previous prediction against the actual widget.
+     */
+    private void validatePrediction() {
+        if (lastPredictedWidget == null || currentWidgetKey == null) {
+            return;
+        }
+        
+        try {
+            if (lastPredictedWidget.equals(currentWidgetKey)) {
+                PRED.info("PREDICTION SUCCESS: {} == {} ✓", lastPredictedWidget, currentWidgetKey);
+                // TODO: Increment success counter
+            } else {
+                PRED.info("PREDICTION FAILED: {} != {} ✗", lastPredictedWidget, currentWidgetKey);
+                // TODO: Increment failure counter
+            }
+            
+            lastPredictedWidget = null;
+            
+        } catch (Exception e) {
+            PRED.error("Error validating prediction: {}", e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Learn widget sequence pattern in trie.
+     */
+    private void learnWidgetSequenceInTrie() {
+        if (widgetInteractionSequence.size() < 3) return;
+        
+        try {
+            // Get last three widget interactions
+            int size = widgetInteractionSequence.size();
+            List<String> triplet = widgetInteractionSequence.subList(size - 3, size);
+            
+            // Navigate/create trie path
+            WidgetTrieNode current = WIDGET_TRIE;
+            for (String widget : triplet) {
+                current = current.children.computeIfAbsent(widget, k -> new WidgetTrieNode());
+            }
+            
+            // Mark as end of sequence and store data
+            current.isEndOfSequence = true;
+            current.completeWidgetSequence = new ArrayList<>(triplet);
+            current.sequenceFrequency++;
+            
+            // Store complete message pattern for all widgets in the triplet sequence
+            List<ModelValuePair> completeSequencePattern = new ArrayList<>();
+            for (String widget : triplet) {
+                List<ModelValuePair> widgetPattern = widgetMessagePatterns.get(widget);
+                if (widgetPattern != null) {
+                    completeSequencePattern.addAll(widgetPattern);
+                }
+            }
+            current.completeMessagePattern = completeSequencePattern;
+            
+            PRED.info("LEARNED SEQUENCE: {} (frequency: {})", triplet, current.sequenceFrequency);
+            
+        } catch (Exception e) {
+            PRED.error("Error learning widget sequence in trie: {}", e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Reset current widget tracking state.
+     */
+    private void resetCurrentWidgetTracking() {
+        currentWidgetKey = null;
+        currentWidgetType = null;
+        currentWidgetId = null;
+        currentWidgetMessages.clear();
+    }
+    
+    /**
+     * Dump widget interaction trie for debugging.
+     */
+    static void dumpWidgetTrie(final WidgetTrieNode node, final String prefix, final String path) {
+        if (node == null) return;
+        
+        if (node.isEndOfSequence && node.completeWidgetSequence != null) {
+            PRED.info("Widget Sequence: {} [COMPLETE] (frequency: {})", 
+                     path, node.sequenceFrequency);
+            if (node.completeMessagePattern != null) {
+                PRED.info("  → Message Pattern: {}", node.completeMessagePattern);
+            }
+        }
+        
+        for (Map.Entry<String, WidgetTrieNode> entry : node.children.entrySet()) {
+            String childPath = path.isEmpty() ? entry.getKey() : path + " → " + entry.getKey();
+            dumpWidgetTrie(entry.getValue(), prefix + "  ", childPath);
+        }
+    }
+//12#26 → 12#27 → 12#28
 
     /**
      * Helper method to check if a model is a TYPE_* command
@@ -1116,10 +2086,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     }
 
 
-                    // If it’s not already in the trie, teach the trie this new 3-item pattern:
+                    // Only add **new** triplets into the static trie
+                    //
+                    //    accumulatedPatterns.add(new ArrayList<>(componentTypes));
+                    //    buildSemanticPatternTrie(accumulatedPatterns);
                     if (!isKnownTriplet(componentTypes)) {
-                        accumulatedPatterns.add(new ArrayList<>(componentTypes));
-                        buildSemanticPatternTrie(accumulatedPatterns);
+                        // directly register *this* 3-element pattern
+                        buildSemanticPatternTrieFromStrings(Collections.singletonList(componentTypes));
                         PRED.info("Learned new triplet: {}", componentTypes);
                         dumpTrie(DICT_TRIE, "");
                     }
@@ -1141,6 +2114,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 log.info("Flushing {} remaining buffered instruction(s).", currentPatternBuffer.size());
                 // Send each buffered instruction as a separate, individual request.
                 for (final String bufferedInstruction : currentPatternBuffer) {
+                    
                     sendJsonPostRequestUsingHttpURLConnection(Arrays.asList(bufferedInstruction));
                 }
                 // Clear the buffer after flushing.

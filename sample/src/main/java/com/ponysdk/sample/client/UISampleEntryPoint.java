@@ -150,6 +150,7 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
         PWindow.getMain().add(url);
 
 
+        
         // Add a button to test sending custom UI components
         final PButton testButton = Element.newPButton("Send Custom UI Component");
         testButton.addClickHandler(e -> {
@@ -211,6 +212,29 @@ public class UISampleEntryPoint implements EntryPoint, UserLoggedOutHandler {
             PWindow.getMain().add(staticLabel);
         });
         PWindow.getMain().add(CheckButton);
+
+        final PButton CheckButton2 = Element.newPButton("Static Component 2");
+        //Create a static UI component
+        CheckButton2.addClickHandler(e -> {
+            final PLabel staticLabel2 = Element.newPLabel("Static component created 2");
+            staticLabel2.addStyleName("static-component2");
+            PWindow.getMain().add(staticLabel2);
+        });
+        PWindow.getMain().add(CheckButton2);
+        
+        // Dictionary Test: Update the SAME widget with the SAME values repeatedly
+        final PLabel testLabel = Element.newPLabel("Initial Text");
+        testLabel.addStyleName("test-label");
+        PWindow.getMain().add(testLabel);
+        
+        final PButton dictionaryTestButton = Element.newPButton("Dictionary Test - Set Same Text (Click 3+ times)");
+        dictionaryTestButton.addClickHandler(e -> {
+            // Always set the exact same text to create identical TYPE_UPDATE patterns
+            testLabel.setText("Same Text Every Time");
+            System.out.println("Updated label with identical text for dictionary test");
+        });
+        PWindow.getMain().add(dictionaryTestButton);
+
         /*
         final StringTextBoxFormField formField = new StringTextBoxFormField("String Formfield");
         PWindow.getMain().add(formField);

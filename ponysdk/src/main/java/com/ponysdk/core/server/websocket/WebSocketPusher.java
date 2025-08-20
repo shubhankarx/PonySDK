@@ -77,6 +77,7 @@ public class WebSocketPusher extends AutoFlushedBuffer implements WriteCallback 
 
     @Override
     public void writeFailed(final Throwable t) {
+        if (listener != null) listener.onFrameWriteFailure(t);
         if (t instanceof Exception) {
             onFlushFailure((Exception) t);
         } else {
@@ -89,6 +90,7 @@ public class WebSocketPusher extends AutoFlushedBuffer implements WriteCallback 
     @Override
     public void writeSuccess() {
         onFlushCompletion();
+        if (listener != null) listener.onFrameWriteSuccess();
     }
 
     /**

@@ -250,4 +250,46 @@ public class WebSocketTest {
         Mockito.verify(session, Mockito.times(1)).close();
     }
 
+    // │ Additional tests for our trie/dictionary routines |
+    // Empty prefix edge case, valid vs invalid prefixes & 2 element prefixes, recognition of full triplet, multiple patterns at once, negative mixed case
+    @Test
+    public void testTrieEmptyAndBadPrefixes() {
+        // start fresh:
+        WebSocket.buildSemanticPatternTrieFromStrings(List.of(List.of("A","B","C")));
+
+        WebSocket ws = new WebSocket();
+
+        // empty prefix ⇒ allowed
+        assertTrue(ws.isPrefixOfKnownTriplet(List.of()));
+        assertFalse(ws.isKnownTriplet(List.of()));
+
+        // single‐element good/bad
+        assertTrue(ws.isPrefixOfKnownTriplet(List.of("A")));
+        assertFalse(ws.isPrefixOfKnownTriplet(List.of("X")));
+
+        // two‐element good/bad
+        assertTrue(ws.isPrefixOfKnownTriplet(List.of("A","B")));
+        assertFalse(ws.isPrefixOfKnownTriplet(List.of("A","C")));
+
+        // full triplet
+        assertTrue(ws.isKnownTriplet(List.of("A","B","C")));
+        assertFalse(ws.isKnownTriplet(List.of("X","Y","Z")));
+    }
+
+    @Test
+    public void testTrieMultiplePatterns() {
+        List<String> p1 = List.of("X1","X2","X3");
+        List<String> p2 = List.of("Y1","Y2","Y3");
+        WebSocket.buildSemanticPatternTrieFromStrings(List.of(p1, p2));
+
+        WebSocket ws = new WebSocket();
+
+        // each pattern is recognized
+        assertTrue(ws.isKnownTriplet(p1));
+        assertTrue(ws.isKnownTriplet(p2));
+
+        // mixed sequences are not
+        assertFalse(ws.isKnownTriplet(List.of("X1","Y2","Y3")));
+        assertFalse(ws.isPrefixOfKnownTriplet(List.of("Y2"))); 
+    }
 }
