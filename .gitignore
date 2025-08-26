@@ -4,3 +4,4 @@
 /.settings/
 /ponysdk/out/*.log
 *.pid
+*.log
