@@ -81,6 +81,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
     private static final int BATCH_THRESHOLD = 2; // Reduced to capture button click patterns
     private boolean dictionaryEnabled = true; // Enabled by default
+    
+    // Track pattern IDs for sequence learning (groups of 3)
+    private final List<Integer> patternSequence = new ArrayList<>(3);
 
     // -- Start of Semantic Pattern Matching for Prediction --
 
@@ -1531,8 +1534,21 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             
             if (newId != null) {
                 PRED.info("Successfully recorded new pattern #{} with {} elements", newId, snapshot.size());
+                
+                // Track pattern in current triplet
+                patternSequence.add(newId);
+                
+                // When we have 3 patterns, feed to trie and reset
+                if (patternSequence.size() == 3) {
+                    List<String> triplet = patternSequence.stream()
+                        .map(id -> "Pattern#" + id)
+                        .collect(Collectors.toList());
+                    buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet));
+                    PRED.info("Trie fed with NEW pattern triplet: {}", triplet);
+                    patternSequence.clear(); // Reset for next triplet
+                }
             } else {
-                PRED.debug("Pattern not recorded - either exists or doesn't meet criteria");
+                PRED.debug("Pattern not recorded - doesn't meet criteria");
             }
             // Widget Interaction Learning (SEPARATE from dictionary compression)
             processWidgetInteraction(snapshot);
@@ -1552,17 +1568,22 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 }
             }
             else if ((ref = dictionary.getPatternId(snapshot)) != null) {
-                // (re‑feed the trie in case you added new patterns at runtime)
-                List<ModelValuePair> pat = dictionary.getPattern(ref);
-                List<String> triplet = pat.stream()
-                    .map(p -> p.getModel().name())
-                    .limit(3)
-                    .collect(Collectors.toList());
-                if (triplet.size() == 3) {
-                    buildSemanticPatternTrieFromStrings(List.of(triplet));
-                    PRED.debug("Trie re‑fed existing triplet #{} : {}", ref, triplet);
-                }
 
+            
+                // Track existing pattern in triplet sequence
+                /*
+                patternSequence.add(ref);
+               
+                // When we have 3 patterns, feed to trie and reset
+                if (patternSequence.size() == 3) {
+                    List<String> triplet = patternSequence.stream()
+                        .map(id -> "Pattern#" + id)
+                        .collect(Collectors.toList());
+                    buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet));
+                    PRED.info("Trie fed with EXISTING pattern triplet: {}", triplet);
+                    patternSequence.clear(); // Reset for next triplet
+                }
+                */
                 // Tell the client "replay pattern #ref"
                 websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, ref);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, ref);

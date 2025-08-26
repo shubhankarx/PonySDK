@@ -95,7 +95,7 @@ public final class NetworkMemoryLatencyMonitor implements WebSocket.Listener {
         // Update the last acknowledgment time when frames are successfully written
         lastAckNano.set(System.nanoTime());
     }
-    n
+    
     /* --------------------------------------------------------------------- */
 
     private void gcAndWait() {
