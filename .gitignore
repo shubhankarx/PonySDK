@@ -2,4 +2,5 @@
 /.idea/
 /.project
 /.settings/
-/ponysdk/out/
+/ponysdk/out/*.log
+*.pid
