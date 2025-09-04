@@ -10,18 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * A minimal, **server-side only** instrumentation helper that can be plugged into any
- * {@link WebSocket} instance by calling {@link WebSocket#setListener(WebSocket.Listener)}.
- * It implements {@link WebSocket.Listener} so it will be notified for every model/value pair
- * as they are encoded as well as for the raw WebSocket frame sizes recorded by
- * {@link WebSocketPusher}.  
- * <ul>
- *   <li><b>Network volume</b> – bytes actually flushed on the {@code Session}.</li>
- *   <li><b>Frame distribution</b> – how many times each {@link ServerToClientModel} appears.</li>
- *   <li><b>Latency</b> – very coarse, server-side time elapsed between the first byte sent
- *       and Jetty’s confirmation callback.</li>
- *   <li><b>Memory usage</b> – heap deltas during the test run.</li>
- * </ul>
+
  *
  * 
  */

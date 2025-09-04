@@ -61,6 +61,15 @@ public class WebSocketServlet extends org.eclipse.jetty.websocket.servlet.WebSoc
         webSocket.setRequest(request);
         webSocket.setApplicationManager(applicationManager);
         webSocket.setMonitor(monitor);
+        
+        // Initialize LatencyTracker for performance monitoring
+        try {
+            webSocket.setListener(new LatencyTracker());
+            System.out.println("LatencyTracker initialized successfully");
+        } catch (Exception e) {
+            System.err.println("Failed to initialize LatencyTracker: " + e.getMessage());
+            e.printStackTrace();
+        }
 
         final TxnContext context = new TxnContext(webSocket);
         webSocket.setContext(context);

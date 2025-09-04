@@ -489,10 +489,15 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * @return true if prefix of any known pattern
      */
     boolean isPrefixOfKnownTriplet(final List<String> prefix) {
-        // Empty prefix matches all patterns
-        if (prefix == null || prefix.isEmpty()) {
-            return true;
-        }
+        final long startNanos = System.nanoTime();
+        boolean result = false;
+        
+        try {
+            // Empty prefix matches all patterns
+            if (prefix == null || prefix.isEmpty()) {
+                result = true;
+                return result;
+            }
         
         TrieNode currentNode = DICT_TRIE;
         
@@ -508,12 +513,22 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             currentNode = currentNode.stringChildren.get(element);
             if (currentNode == null) {
                 // Path doesn't exist
-                return false;
+                result = false;
+                return result;
             }
         }
         
         // Successfully navigated entire prefix
-        return true;
+        result = true;
+        return result;
+        
+        } finally {
+            // Measure trie query latency
+            final long latencyNanos = System.nanoTime() - startNanos;
+            if (listener instanceof LatencyTracker) {
+                ((LatencyTracker) listener).onTrieQuery("prefix_lookup", result, latencyNanos);
+            }
+        }
     }
 
     /**
@@ -611,37 +626,53 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * @return true if exact triplet exists in trie
      */
     boolean isKnownTriplet(final List<String> seq) {
-        // Input validation
-        if (seq == null || seq.size() != 3) {
-            PRED.debug("Invalid triplet size: {}", seq == null ? "null" : seq.size());
-            return false;
-        }
+        final long startNanos = System.nanoTime();
+        boolean result = false;
         
-        // Check for null elements
-        for (int i = 0; i < 3; i++) {
-            if (seq.get(i) == null) {
-                PRED.debug("Null element at position {} in triplet", i);
-                return false;
+        try {
+            // Input validation
+            if (seq == null || seq.size() != 3) {
+                PRED.debug("Invalid triplet size: {}", seq == null ? "null" : seq.size());
+                result = false;
+                return result;
+            }
+        
+            // Check for null elements
+            for (int i = 0; i < 3; i++) {
+                if (seq.get(i) == null) {
+                    PRED.debug("Null element at position {} in triplet", i);
+                    result = false;
+                    return result;
+                }
+            }
+            
+            PRED.debug("Checking if triplet is known: {}", seq);
+            TrieNode currentNode = DICT_TRIE;
+            
+            // Navigate the complete triplet path
+            for (final String element : seq) {
+                currentNode = currentNode.stringChildren.get(element);
+                if (currentNode == null) {
+                    PRED.debug("Path broken at element: {}", element);
+                    result = false;
+                    return result;
+                }
+            }
+            
+            // Check if this node represents a complete pattern
+            final boolean isKnown = currentNode.isEndOfPattern;
+            PRED.debug("Triplet {} {}", seq, isKnown ? "EXISTS" : "NOT FOUND");
+            
+            result = isKnown;
+            return result;
+            
+        } finally {
+            // Measure trie triplet lookup latency
+            final long latencyNanos = System.nanoTime() - startNanos;
+            if (listener instanceof LatencyTracker) {
+                ((LatencyTracker) listener).onTrieQuery("triplet_lookup", result, latencyNanos);
             }
         }
-        
-        PRED.debug("Checking if triplet is known: {}", seq);
-        TrieNode currentNode = DICT_TRIE;
-        
-        // Navigate the complete triplet path
-        for (final String element : seq) {
-            currentNode = currentNode.stringChildren.get(element);
-            if (currentNode == null) {
-                PRED.debug("Path broken at element: {}", element);
-                return false;
-            }
-        }
-        
-        // Check if this node represents a complete pattern
-        final boolean isKnown = currentNode.isEndOfPattern;
-        PRED.debug("Triplet {} {}", seq, isKnown ? "EXISTS" : "NOT FOUND");
-        
-        return isKnown;
     }
 
     /**
@@ -798,6 +829,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             // Don't set max chunk size > 8K because when using Jetty Websocket compression, the chunks are limited to 8K
 
             this.websocketPusher = new WebSocketPusher(session, 1 << 20, 1 << 12, TimeUnit.SECONDS.toMillis(60));
+            
+            // Set the listener on websocketPusher if it was set early
+            if (this.listener != null) {
+                this.websocketPusher.setWebSocketListener(this.listener);
+            }
+            
             uiContext = new UIContext(this, context, applicationManager.getConfiguration(), request);
             log.info("Creating a new {}", uiContext);
 
@@ -1169,6 +1206,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     public void encode(final ServerToClientModel model, final Object value) {
         Integer ref = null; // Move ref declaration here
         PRED.info("Model S2C {} {}", model, value);
+        
+        // Stage 1: Intercept message for latency tracking
+        if (listener instanceof LatencyTracker) {
+            ((LatencyTracker)listener).onInterceptMessage(model.name(), value);
+        }
         if (UIContext.get() == null) {
             log.warn("encode in websocket without current ui context acquired", new Exception());
             uiContext.acquire();
@@ -1194,6 +1236,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             try {
                 if (loggerOut.isTraceEnabled())
                     loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
+                // Stage 4: Track encoding
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker)listener).onEncode(model, value);
+                }
                 websocketPusher.encode(model, value);
                 if (listener != null) listener.onOutgoingPonyFrame(model, value);
             } catch (final IOException e) {
@@ -1220,6 +1266,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 model == ServerToClientModel.DICTIONARY_PATTERN_END ||
                 model == ServerToClientModel.DICTIONARY_REFERENCE) {
                 
+                // Stage 4: Track encoding (alternative path)
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker)listener).onEncode(model, value);
+                }
                 websocketPusher.encode(model, value);
                 if (listener != null) listener.onOutgoingPonyFrame(model, value);
                 return;
@@ -1251,11 +1301,19 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 testPattern.add(pair);
                 
                 Integer patternId = dictionary.getPatternId(testPattern);
+                // Stage 2: Track dictionary lookup
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker)listener).onDictionaryLookup("pattern_" + testPattern.size(), patternId != null);
+                }
                 if (patternId != null) {
                     // Use existing pattern reference
                     PRED.info("Found existing pattern #{} for batch of {} elements - sending reference", patternId, testPattern.size());
                     if (loggerOut.isTraceEnabled())
                         loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
+                    // Stage 3: Track hash reference
+                    if (listener instanceof LatencyTracker) {
+                        ((LatencyTracker)listener).onHashCompute("REF#" + patternId, new byte[0]);
+                    }
                     websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     currentBatch.clear();
@@ -1446,6 +1504,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     public void setMonitor(final WebsocketMonitor monitor) {
         this.monitor = monitor;
     }
+    
+    /**
+     * Get latency metrics if LatencyTracker is enabled
+     */
+    public LatencyTracker.LatencyStats getLatencyMetrics() {
+        if (listener instanceof LatencyTracker) {
+            return ((LatencyTracker)listener).getStageMetrics();
+        }
+        return null;
+    }
 
     public void setContext(final TxnContext context) {
         this.context = context;
@@ -1453,7 +1521,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     public void setListener(final Listener listener) {
         this.listener = listener;
-        this.websocketPusher.setWebSocketListener(listener);
+        if (this.websocketPusher != null) {
+            this.websocketPusher.setWebSocketListener(listener);
+        }
         if (!(session instanceof Container)) {
             log.warn("Unrecognized session type {} for {}", session == null ? null : session.getClass(), uiContext);
             return;
@@ -1566,6 +1636,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     websocketPusher.encode(p.getModel(), p.getValue());
                     if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
                 }
+                currentBatch.clear();
+                return;
             }
             else if ((ref = dictionary.getPatternId(snapshot)) != null) {
 
@@ -1769,6 +1841,21 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                             PRED.info("Predicted message pattern: {}", predictedMessages);
                             // TODO: Send prediction to client early
                         }
+                        
+                        // Measure successful widget prediction
+                        if (listener instanceof LatencyTracker) {
+                            ((LatencyTracker) listener).onWidgetPrediction(prediction, true);
+                        }
+                    } else {
+                        // Measure failed widget prediction
+                        if (listener instanceof LatencyTracker) {
+                            ((LatencyTracker) listener).onWidgetPrediction("none", false);
+                        }
+                    }
+                } else {
+                    // Measure widget prediction miss (no patterns found)
+                    if (listener instanceof LatencyTracker) {
+                        ((LatencyTracker) listener).onWidgetPrediction("none", false);
                     }
                 }
             }
@@ -1789,10 +1876,18 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         try {
             if (lastPredictedWidget.equals(currentWidgetKey)) {
                 PRED.info("PREDICTION SUCCESS: {} == {} ✓", lastPredictedWidget, currentWidgetKey);
-                // TODO: Increment success counter
+                
+                // Measure prediction validation success
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker) listener).onWidgetPrediction(currentWidgetKey, true);
+                }
             } else {
                 PRED.info("PREDICTION FAILED: {} != {} ✗", lastPredictedWidget, currentWidgetKey);
-                // TODO: Increment failure counter
+                
+                // Measure prediction validation failure
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker) listener).onWidgetPrediction(currentWidgetKey, false);
+                }
             }
             
             lastPredictedWidget = null;
@@ -1894,7 +1989,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private void sendJsonPostRequestUsingHttpURLConnection(List<String> instructionsToSend) {
         // Wrap the network call in a new thread to avoid blocking the current thread.
         new Thread(() -> {
+            final long startNanos = System.nanoTime();
             HttpURLConnection con = null;
+            boolean success = false;
+            
             try {
                 // Define the URL of your FastAPI server endpoint.
                 // Ensure your FastAPI server is running on http://127.0.0.1:8000/.
@@ -2000,6 +2098,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                         synchronized (predictionLock) {
                             lastPrediction = prediction; // Update lastPrediction with the current prediction
                         }
+                        
+                        success = true; // Mark as successful
+                        
                     } catch (Exception e) {
                         log.error("Error parsing FastAPI response or performing comparison: ", e);
                     }
@@ -2008,6 +2109,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 }
             } catch (IOException e) {
                 log.error("Error sending POST request to FastAPI: ", e);
+            } finally {
+                // Measure CodeT5/FastAPI request latency
+                final long latencyNanos = System.nanoTime() - startNanos;
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker) listener).onCodeT5Query(success, latencyNanos, "generate");
+                }
             }
         }).start(); // Start the new thread for the network call.
     }
