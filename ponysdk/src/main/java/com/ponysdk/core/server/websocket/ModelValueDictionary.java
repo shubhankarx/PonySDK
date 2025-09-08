@@ -50,13 +50,43 @@ public class ModelValueDictionary {
      *                Must contain at least one TYPE_* command to be valid.
      * @return Pattern ID if already in dictionary or just promoted; null if still accumulating occurrences
      */
+    /**
+     * Core dictionary method that handles BOTH pattern storage AND retrieval.
+     * 
+     * COMPLETE FLOW OVERVIEW:
+     * =======================
+     * Called EVERY time a pattern needs to be sent to client - serves dual purpose!
+     * 
+     * Pattern Lifecycle (for same pattern X):
+     * 1st call → Records occurrence, returns null → WebSocket sends raw frames
+     * 2nd call → Records occurrence, returns null → WebSocket sends raw frames  
+     * 3rd call → Stores in dictionary, returns NEW ID → WebSocket sends raw frames
+     * 4th+ call → Finds in dictionary, returns EXISTING ID → WebSocket sends reference!
+     * 
+     * Bandwidth savings happen on 4th+ call - just send ID instead of full data.
+     * 
+     * DECISION TREE:
+     * 1. Validate pattern (not empty, has TYPE command)
+     * 2. Normalize to ArrayList for HashMap consistency
+     * 3. Check if pattern exists in dictionary:
+     *    - YES (4th+ time): Return existing ID immediately
+     *    - NO: Continue to step 4
+     * 4. Track pattern occurrence count
+     * 5. Check if count reached threshold (3):
+     *    - YES (3rd time): Store pattern, generate ID, return new ID
+     *    - NO (1st-2nd time): Just increment counter, return null
+     * 
+     * @param pattern The UI operation pattern to record/lookup
+     * @return null (1st-2nd time), new ID (3rd time), or existing ID (4th+ time)
+     */
     public Integer recordPattern(final List<ModelValuePair> pattern) {
-        // Null/empty validation - patterns must have content
+        // ==================== VALIDATION PHASE ====================
+        // Step 1: Null/empty check - patterns must have content
         if (pattern == null || pattern.isEmpty()) {
             return null;
         }
 
-        // Verify pattern contains TYPE_* command (TYPE_CREATE, TYPE_UPDATE, etc.)
+        // Step 2: Verify pattern contains TYPE_* command (TYPE_CREATE, TYPE_UPDATE, etc.)
         // Required for valid UI operation replay on client side
         boolean hasTypeCommand = false;
         for (ModelValuePair pair : pattern) {
@@ -66,43 +96,52 @@ public class ModelValueDictionary {
             }
         }
 
-        // Reject incomplete patterns lacking TYPE_* command
+        // Step 3: Reject incomplete patterns lacking TYPE_* command
         // These cannot be safely replayed and would corrupt client state
         if (!hasTypeCommand) {
             return null;
         }
 
-        // FIX: Normalize pattern to ArrayList for consistent HashMap operations
-        // This ensures the same List implementation type for all HashMap interactions
+        // ==================== NORMALIZATION PHASE ====================
+        // Step 4: Normalize pattern to ArrayList for consistent HashMap operations
+        // CRITICAL: Without this, LinkedList vs ArrayList would never match in HashMap!
         final List<ModelValuePair> normalizedPattern = new ArrayList<>(pattern);
         
-        // Check if pattern already exists in dictionary using normalized key
+        // ==================== DICTIONARY LOOKUP PHASE ====================
+        // Step 5: CHECK FIRST if pattern already exists (handles 4th+ occurrences)
+        // This is the KEY optimization - reuse existing patterns!
         final Integer existing = patternToId.get(normalizedPattern);
         if (existing != null) {
+            // SUCCESS! Pattern found in dictionary (4th+ occurrence)
+            // Return existing ID so WebSocket can send reference instead of raw frames
             return existing;  // Pattern already compressed, return its ID
         }
 
+        // ==================== OCCURRENCE TRACKING PHASE ====================
+        // Step 6: Pattern not in dictionary yet (1st, 2nd, or 3rd occurrence)
         // Track pattern frequency - computeIfAbsent ensures thread-safe counter creation
         final AtomicInteger count = patternCounts.computeIfAbsent(normalizedPattern, k -> new AtomicInteger(0));
         
-        // Check if pattern has reached promotion threshold
+        // Step 7: Increment count and check if pattern reached threshold (default: 3)
         if (count.incrementAndGet() >= frequencyThreshold) {
+            // ==================== DICTIONARY STORAGE PHASE (3rd occurrence) ====================
+            // Step 7a: Pattern has been seen 3 times - promote to dictionary!
             // Generate unique ID for new dictionary entry
             final int id = nextId.getAndIncrement();
             
-            // Atomic check-and-set: only store if no other thread recorded this pattern
-            // This follows the established putIfAbsent pattern used throughout the codebase
+            // Step 7b: Atomic check-and-set to handle concurrent access
+            // Only one thread wins if multiple threads try to store same pattern
             final Integer existingId = patternToId.putIfAbsent(normalizedPattern, id);
             if (existingId != null) {
                 // Another thread won the race - return their ID
                 return existingId;
             }
             
-            // We successfully recorded the pattern - complete the setup
+            // Step 7c: We won! Store reverse mapping for client replay
             // Store immutable copy for external access (maintains encapsulation)
             idToPattern.put(id, Collections.unmodifiableList(new ArrayList<>(normalizedPattern)));
             
-            // Remove from tracking - pattern is now in dictionary
+            // Step 7d: Cleanup - remove from occurrence tracking (now in dictionary)
             patternCounts.remove(normalizedPattern);
             
             // Log pattern promotion for monitoring/debugging
@@ -122,10 +161,13 @@ public class ModelValueDictionary {
             patternDetails.append("]");
             PRED.info(patternDetails.toString());
             
+            // Step 7e: Return new ID - pattern is now stored and reusable!
             return id;  // Return new dictionary ID
         }
         
-        // Pattern occurrence recorded but threshold not yet met
+        // ==================== BELOW THRESHOLD (1st or 2nd occurrence) ====================
+        // Step 8: Pattern count < threshold - just tracking, not storing yet
+        // Return null to indicate pattern not in dictionary
         return null;
     }
 

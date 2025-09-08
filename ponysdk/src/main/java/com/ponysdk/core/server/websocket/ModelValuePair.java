@@ -24,6 +24,7 @@ package com.ponysdk.core.server.websocket;
 
 import com.ponysdk.core.model.ServerToClientModel;
 import java.util.Objects;
+import java.util.EnumSet;
 
 /**
  * Immutable pair of ServerToClientModel and its associated value for pattern detection.

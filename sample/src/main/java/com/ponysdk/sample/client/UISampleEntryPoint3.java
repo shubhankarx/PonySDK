@@ -161,12 +161,14 @@ public class UISampleEntryPoint3 implements EntryPoint {
         final PButton mediumTestButton = Element.newPButton("Run Medium Widget Test (Trading Form)");
         final PButton largeTestButton = Element.newPButton("Run Large Widget Test (Full Dashboard)");
         final PButton identicalTestButton = Element.newPButton("🔄 Test IDENTICAL Patterns (Dictionary Test)");
+        final PButton cyclicTestButton = Element.newPButton("🔁 Test CYCLIC Patterns (Dictionary Hits)");
         final PButton clearButton = Element.newPButton("Clear All Widgets");
         
         controlPanel.add(smallTestButton);
         controlPanel.add(mediumTestButton);
         controlPanel.add(largeTestButton);
         controlPanel.add(identicalTestButton);
+        controlPanel.add(cyclicTestButton);
         controlPanel.add(clearButton);
         
         mainPanel.add(controlPanel);
@@ -181,6 +183,7 @@ public class UISampleEntryPoint3 implements EntryPoint {
         mediumTestButton.addClickHandler(e -> runMediumWidgetTest(resultsPanel));
         largeTestButton.addClickHandler(e -> runLargeWidgetTest(resultsPanel));
         identicalTestButton.addClickHandler(e -> runIdenticalPatternTest(resultsPanel));
+        cyclicTestButton.addClickHandler(e -> runCyclicPatternTest(resultsPanel));
         clearButton.addClickHandler(e -> {
             resultsPanel.clear();
             updateCounter.set(0);
@@ -455,6 +458,68 @@ public class UISampleEntryPoint3 implements EntryPoint {
             eurUsdBid += (Math.random() - 0.5) * 0.00001;
             eurUsdAsk += (Math.random() - 0.5) * 0.00001;
         }, Duration.ofMillis(100));
+    }
+    
+    /**
+     * CYCLIC Pattern Test: Cycles through A->B->C->A->B->C pattern
+     * This ensures different values to bypass widget optimization
+     * while creating repeating patterns for dictionary hits
+     */
+    private void runCyclicPatternTest(final PVerticalPanel resultsPanel) {
+        final PLabel testLabel = Element.newPLabel("=== 🔁 CYCLIC Pattern Dictionary Test ===");
+        testLabel.addStyleName("test-section-header");
+        resultsPanel.add(testLabel);
+        
+        final PLabel instructionLabel = Element.newPLabel("This test cycles through values A→B→C repeatedly to generate dictionary hits.");
+        resultsPanel.add(instructionLabel);
+        
+        // Create test widgets for cyclic updates
+        final PLabel statusLabel = Element.newPLabel("Status: A");
+        final PLabel priceLabel = Element.newPLabel("Price: 100");
+        final PLabel volumeLabel = Element.newPLabel("Volume: LOW");
+        
+        resultsPanel.add(statusLabel);
+        resultsPanel.add(priceLabel);
+        resultsPanel.add(volumeLabel);
+        
+        // Cyclic values to rotate through
+        final String[] statusValues = {"Status: A", "Status: B", "Status: C"};
+        final String[] priceValues = {"Price: 100", "Price: 200", "Price: 300"};
+        final String[] volumeValues = {"Volume: LOW", "Volume: MED", "Volume: HIGH"};
+        
+        final AtomicInteger cycleIndex = new AtomicInteger(0);
+        final AtomicInteger updateCount = new AtomicInteger(0);
+        
+        // Update task that cycles through values
+        final Runnable cyclicUpdate = new Runnable() {
+            @Override
+            public void run() {
+                int index = cycleIndex.get() % 3;
+                int count = updateCount.incrementAndGet();
+                
+                // Update with cyclic values (A->B->C->A->B->C...)
+                statusLabel.setText(statusValues[index]);
+                priceLabel.setText(priceValues[index]);
+                volumeLabel.setText(volumeValues[index]);
+                
+                System.out.println("🔁 Cyclic Update #" + count + " - Pattern: " + (char)('A' + index) + 
+                                 " (should create dictionary hits after 3rd cycle)");
+                
+                cycleIndex.incrementAndGet();
+                
+                // Run for 30 updates (10 complete cycles)
+                if (count >= 30) {
+                    System.out.println("✅ Cyclic test complete: " + count + " updates, " + (count/3) + " complete cycles");
+                    System.out.println("   Dictionary should show hits for repeated patterns!");
+                } else {
+                    // Schedule next update
+                    PScheduler.schedule(UIContext.get(), this, Duration.ofMillis(200));
+                }
+            }
+        };
+        
+        // Start the cyclic updates
+        PScheduler.schedule(UIContext.get(), cyclicUpdate, Duration.ofMillis(100));
     }
 
 }

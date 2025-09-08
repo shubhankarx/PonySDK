@@ -1282,7 +1282,32 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     flushCurrentBatch();
                 }
                 
-                // Start a new batch with this type command
+                // Check if this single TYPE command exists in dictionary
+                List<ModelValuePair> singlePattern = Collections.singletonList(pair);
+                PRED.debug("SINGLE TYPE: Looking for single TYPE command pattern in dictionary: {}", singlePattern);
+                Integer patternId = dictionary.getPatternId(singlePattern);
+                PRED.debug("SINGLE TYPE: Dictionary returned patternId: {}", patternId);
+                
+                // Track single message dictionary lookup
+                if (listener instanceof LatencyTracker) {
+                    ((LatencyTracker)listener).onDictionaryLookup("type_pattern", patternId != null);
+                }
+                
+                if (patternId != null) {
+                    // Use existing pattern reference for single TYPE command
+                    PRED.info("Found existing TYPE pattern #{} - sending reference instead of full TYPE command", patternId);
+                    if (loggerOut.isTraceEnabled())
+                        loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
+                    // Track hash reference
+                    if (listener instanceof LatencyTracker) {
+                        ((LatencyTracker)listener).onHashCompute("REF#" + patternId, new byte[0]);
+                    }
+                    websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                    if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                    return; // Pattern found and sent, don't add to batch
+                }
+                
+                // No pattern found, start a new batch with this type command
                 currentBatch.add(pair);
                 return;
             }
@@ -1295,12 +1320,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             }
             
             // Check if we already have a batch in progress
+            PRED.debug("BATCH: currentBatch.size()={}, processing model={}, value={}", currentBatch.size(), model, value);
             if (!currentBatch.isEmpty()) {
                 // First try to find the complete pattern including this pair
                 List<ModelValuePair> testPattern = new ArrayList<>(currentBatch);
                 testPattern.add(pair);
                 
+                // DEBUG: Log what we're looking up
+                PRED.debug("LOOKUP: Looking for pattern of size {} in dictionary: {}", testPattern.size(), testPattern);
                 Integer patternId = dictionary.getPatternId(testPattern);
+                PRED.debug("LOOKUP: Dictionary returned patternId: {}", patternId);
                 // Stage 2: Track dictionary lookup
                 if (listener instanceof LatencyTracker) {
                     ((LatencyTracker)listener).onDictionaryLookup("pattern_" + testPattern.size(), patternId != null);
@@ -1624,18 +1653,33 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             processWidgetInteraction(snapshot);
             
             if (newId != null) {
-                // Dictionary compression continues as before (unchanged)
-                PRED.debug("Dictionary recorded pattern #{} with {} elements", newId, snapshot.size());
-                // Send pattern definition to client
+                // FIX: Client-Server Dictionary Synchronization (Sep 8 2025)
+                // PROBLEM: Server was storing patterns but never sending definitions to client
+                // RESULT: Client received DICTIONARY_REFERENCE but had no patterns stored locally
+                // SOLUTION: Send DICTIONARY_PATTERN_START + pattern + END to client on first storage
+                // This allows client to store pattern locally before we send references
+                
+                PRED.debug("Dictionary recorded pattern #{} with {} elements - sending definition to client", newId, snapshot.size());
                 if (loggerOut.isTraceEnabled())
                     loggerOut.trace("UIContext #{} : Recording new pattern {} (size: {})", 
                             this.uiContext.getID(), newId, snapshot.size());
-                    
-                // Send actual frames instead of dictionary pattern to ensure UI works
+                
+                // CRITICAL: Send pattern definition to client so it can store it locally
+                // Protocol: DICTIONARY_PATTERN_START + pattern_contents + DICTIONARY_PATTERN_END
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                
+                // Send each ModelValuePair in the pattern
                 for (ModelValuePair p : snapshot) {
                     websocketPusher.encode(p.getModel(), p.getValue());
                     if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
                 }
+                
+                // End pattern definition
+                websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                
+                PRED.info("SYNC FIX: Sent pattern definition #{} to client - future references will work", newId);
                 currentBatch.clear();
                 return;
             }
