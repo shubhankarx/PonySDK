@@ -21,6 +21,12 @@ public final class LatencyTracker implements WebSocket.Listener {
     private final AtomicLong dictionaryMissCount = new AtomicLong(0);
     private final AtomicLong hashOperationCount = new AtomicLong(0);
     
+    // Dictionary performance tracking
+    private final AtomicLong messagesWithDictionary = new AtomicLong(0);
+    private final AtomicLong messagesWithoutDictionary = new AtomicLong(0);
+    private final AtomicLong totalDictionaryLatencyNanos = new AtomicLong(0);
+    private final AtomicLong totalNoDictionaryLatencyNanos = new AtomicLong(0);
+    
     // Trie prediction tracking (thread-safe for cross-thread access)
     private final AtomicLong trieQueryCount = new AtomicLong(0);
     private final AtomicLong trieHitCount = new AtomicLong(0);
@@ -47,7 +53,11 @@ public final class LatencyTracker implements WebSocket.Listener {
     // Ring buffer for percentile calculations (power of 2 for fast modulo)
     private static final int RING_BUFFER_SIZE = 1024;
     private final long[] latencyRingBuffer = new long[RING_BUFFER_SIZE];
+    private final boolean[] dictionaryUsedBuffer = new boolean[RING_BUFFER_SIZE]; // Track dictionary usage per transmission
     private final AtomicLong ringBufferWriteIndex = new AtomicLong(0);
+    
+    // Track current transmission's dictionary usage
+    private volatile boolean currentTransmissionUsedDictionary = false;
     
     // Aggregate metrics
     private final AtomicLong totalTransmissions = new AtomicLong(0);
@@ -78,9 +88,11 @@ public final class LatencyTracker implements WebSocket.Listener {
     public void onDictionaryLookup(String patternKey, boolean cacheHit) {
         if (cacheHit) {
             dictionaryHitCount.incrementAndGet();
+            currentTransmissionUsedDictionary = true; // Mark current transmission as using dictionary
             log.debug("Dictionary cache HIT: {}", patternKey);
         } else {
             dictionaryMissCount.incrementAndGet();
+            // Note: miss doesn't mean no dictionary, just no pattern found
         }
     }
     
@@ -184,6 +196,16 @@ public final class LatencyTracker implements WebSocket.Listener {
         // Store in ring buffer for percentile calculation
         int bufferIndex = (int)(ringBufferWriteIndex.getAndIncrement() & (RING_BUFFER_SIZE - 1));
         latencyRingBuffer[bufferIndex] = latencyNanos;
+        dictionaryUsedBuffer[bufferIndex] = currentTransmissionUsedDictionary; // Store dictionary usage
+        
+        // Track dictionary-specific counters
+        if (currentTransmissionUsedDictionary) {
+            messagesWithDictionary.incrementAndGet();
+            totalDictionaryLatencyNanos.addAndGet(latencyNanos);
+        } else {
+            messagesWithoutDictionary.incrementAndGet();
+            totalNoDictionaryLatencyNanos.addAndGet(latencyNanos);
+        }
         
         // Update min/max with CAS loop
         updateMinLatency(latencyNanos);
@@ -191,6 +213,9 @@ public final class LatencyTracker implements WebSocket.Listener {
         
         totalTransmissions.incrementAndGet();
         currentTransmissionBytes.set(0);
+        
+        // Reset dictionary flag for next transmission
+        currentTransmissionUsedDictionary = false;
         
         // Alert on high latency
         if (latencyNanos > 50_000_000L) { // > 50ms
@@ -301,6 +326,41 @@ public final class LatencyTracker implements WebSocket.Listener {
             totalTransmittedBytes.get() / 1024, hashOperationCount.get());
         log.info("Latency: p50={}ms, p95={}ms, p99={}ms", 
             String.format("%.2f", calculatePercentile(50)), String.format("%.2f", calculatePercentile(95)), String.format("%.2f", calculatePercentile(99)));
+            
+        // Dictionary performance comparison
+        long dictMsgs = messagesWithDictionary.get();
+        long noDictMsgs = messagesWithoutDictionary.get();
+        
+        if (dictMsgs > 0 && noDictMsgs > 0) {
+            double avgDictLatency = totalDictionaryLatencyNanos.get() / 1_000_000.0 / dictMsgs;
+            double avgNoDictLatency = totalNoDictionaryLatencyNanos.get() / 1_000_000.0 / noDictMsgs;
+            double improvement = ((avgNoDictLatency - avgDictLatency) / avgNoDictLatency) * 100;
+            
+            log.info("=== DICTIONARY PERFORMANCE COMPARISON ===");
+            log.info("WITH Dictionary: {}ms avg ({} transmissions)", 
+                String.format("%.2f", avgDictLatency), dictMsgs);
+            log.info("WITHOUT Dictionary: {}ms avg ({} transmissions)", 
+                String.format("%.2f", avgNoDictLatency), noDictMsgs);
+            log.info("Performance Impact: {}% {}", 
+                String.format("%.1f", Math.abs(improvement)), 
+                improvement > 0 ? "IMPROVEMENT" : "OVERHEAD");
+            
+            // Calculate percentiles for each category
+            log.info("Dictionary percentiles: p50={}ms, p95={}ms, p99={}ms",
+                String.format("%.2f", calculatePercentileForCategory(50, true)),
+                String.format("%.2f", calculatePercentileForCategory(95, true)),
+                String.format("%.2f", calculatePercentileForCategory(99, true)));
+            log.info("No-Dictionary percentiles: p50={}ms, p95={}ms, p99={}ms",
+                String.format("%.2f", calculatePercentileForCategory(50, false)),
+                String.format("%.2f", calculatePercentileForCategory(95, false)),
+                String.format("%.2f", calculatePercentileForCategory(99, false)));
+        } else if (dictMsgs > 0) {
+            double avgDictLatency = totalDictionaryLatencyNanos.get() / 1_000_000.0 / dictMsgs;
+            log.info("Dictionary ONLY: {}ms avg ({} transmissions)", String.format("%.2f", avgDictLatency), dictMsgs);
+        } else if (noDictMsgs > 0) {
+            double avgNoDictLatency = totalNoDictionaryLatencyNanos.get() / 1_000_000.0 / noDictMsgs;
+            log.info("No-Dictionary ONLY: {}ms avg ({} transmissions)", String.format("%.2f", avgNoDictLatency), noDictMsgs);
+        }
         
         // Log top 3 frame types
         frameTypeDistribution.entrySet().stream()
@@ -331,6 +391,36 @@ public final class LatencyTracker implements WebSocket.Listener {
         java.util.Arrays.sort(latencySamples);
         int percentileIndex = (int)(percentile * (sampleCount - 1) / 100.0);
         return latencySamples[percentileIndex] / 1_000_000.0; // Convert to ms
+    }
+    
+    /**
+     * Calculate latency percentile for specific category (dictionary vs no-dictionary)
+     * @param percentile 0-100
+     * @param withDictionary true for dictionary transmissions, false for non-dictionary
+     * @return latency in milliseconds
+     */
+    public double calculatePercentileForCategory(double percentile, boolean withDictionary) {
+        int sampleCount = Math.min((int)totalTransmissions.get(), RING_BUFFER_SIZE);
+        if (sampleCount == 0) return 0;
+        
+        // Collect samples for the specific category
+        java.util.List<Long> categorySamples = new java.util.ArrayList<>();
+        int startIndex = totalTransmissions.get() > RING_BUFFER_SIZE ? 
+            (int)((ringBufferWriteIndex.get() - RING_BUFFER_SIZE) & (RING_BUFFER_SIZE - 1)) : 0;
+            
+        for (int i = 0; i < sampleCount; i++) {
+            int bufferIndex = (startIndex + i) & (RING_BUFFER_SIZE - 1);
+            if (dictionaryUsedBuffer[bufferIndex] == withDictionary) {
+                categorySamples.add(latencyRingBuffer[bufferIndex]);
+            }
+        }
+        
+        if (categorySamples.isEmpty()) return 0;
+        
+        // Sort and calculate percentile
+        categorySamples.sort(Long::compareTo);
+        int percentileIndex = (int)(percentile * (categorySamples.size() - 1) / 100.0);
+        return categorySamples.get(percentileIndex) / 1_000_000.0; // Convert to ms
     }
     
     /**

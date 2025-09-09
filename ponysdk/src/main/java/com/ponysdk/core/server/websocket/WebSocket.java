@@ -1304,6 +1304,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     }
                     websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                    
+                    // Close and flush to ensure latency tracking completes
+                    websocketPusher.encode(ServerToClientModel.END, null);
+                    if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.END, null);
+                    flush0();
                     return; // Pattern found and sent, don't add to batch
                 }
                 
@@ -1345,6 +1350,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     }
                     websocketPusher.encode(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
                     if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_REFERENCE, patternId);
+                    
+                    // Close and flush to ensure latency tracking completes
+                    websocketPusher.encode(ServerToClientModel.END, null);
+                    if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.END, null);
+                    flush0();
+                    
                     currentBatch.clear();
                     return;
                 } else {
@@ -1679,9 +1690,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_END, null);
                 
+                // Close and flush the definition message to ensure client stores it and latency is tracked
+                websocketPusher.encode(ServerToClientModel.END, null);
+                if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.END, null);
+                flush0();
+                
                 PRED.info("SYNC FIX: Sent pattern definition #{} to client - future references will work", newId);
-                currentBatch.clear();
-                return;
+                
+                // Now send the actual UI update as a separate message
+                // Start a new message for the actual content
+                beginObject();
             }
             else if ((ref = dictionary.getPatternId(snapshot)) != null) {
 
@@ -1712,12 +1730,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 currentBatch.clear();
                 return;
             }
-            else { // this is the original else block
-                // Send all frames directly without pattern recording
-                for (ModelValuePair p : snapshot) {
-                    websocketPusher.encode(p.getModel(), p.getValue());
-                    if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
-                }
+            
+            // Send the actual frames (either after definition or as raw frames)
+            for (ModelValuePair p : snapshot) {
+                websocketPusher.encode(p.getModel(), p.getValue());
+                if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
             }
         } catch (final Exception e) {
             log.error("Error in flushCurrentBatch for UIContext #{}", uiContext.getID(), e);

@@ -134,6 +134,17 @@ Based on the existing cursor.md file, the project has recently implemented:
 - Performance testing framework for measuring optimization impact
 - Semantic pattern prediction system (experimental)
 
+### Recent Fixes (December 2024)
+
+**Fixed Dictionary Compression Latency Tracking (0ms issue)**
+- **Problem**: LatencyTracker showed 0ms for dictionary-compressed messages because certain code paths didn't properly close messages with END/flush
+- **Root Cause**: `onFrameWriteSuccess()` callback never fired without proper message termination
+- **Fixed Paths**:
+  1. Single TYPE command reference (line ~1305): Added END + flush0()
+  2. New pattern definition (line ~1679): Added END + flush0() + beginObject() for separate messages  
+  3. Batch pattern reference (line ~1351): Added END + flush0()
+- **Impact**: All dictionary transmissions now properly record latency metrics instead of showing 0ms
+
 ## Key Dependencies
 
 - GWT 2.9.0

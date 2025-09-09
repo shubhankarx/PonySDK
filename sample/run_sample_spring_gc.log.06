@@ -1,5 +1,0 @@
-[2025-08-25T10:43:24.597+0200][0.250s][info][gc] Using Concurrent Mark Sweep
-[2025-08-25T10:43:24.597+0200][0.250s][info][gc,heap,coops] Heap address: 0x00000005c0000000, size: 8192 MB, Compressed Oops mode: Zero based, Oop shift amount: 3
-[2025-08-25T10:43:28.493+0200][4.147s][info][safepoint    ] Entering safepoint region: Cleanup
-[2025-08-25T10:43:28.524+0200][4.177s][info][safepoint    ] Leaving safepoint region
-[2025-08-25T10:43:28.524+0200][4.177s][info][safepoint    ] Total time for which application threads were stopped: 0.0549899 seconds, Stopping threads took: 0.0249649 seconds
