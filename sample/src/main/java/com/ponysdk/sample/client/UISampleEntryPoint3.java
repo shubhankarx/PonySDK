@@ -173,6 +173,52 @@ public class UISampleEntryPoint3 implements EntryPoint {
         
         mainPanel.add(controlPanel);
         
+        // Feature Control Panel with Checkboxes
+        final PHorizontalPanel featurePanel = Element.newPHorizontalPanel();
+        featurePanel.setSpacing(20);
+        featurePanel.addStyleName("feature-control-panel");
+        
+        final PLabel featureLabel = Element.newPLabel("Feature Controls:");
+        featureLabel.addStyleName("feature-label");
+        featurePanel.add(featureLabel);
+        
+        final PCheckBox dictionaryCheckBox = Element.newPCheckBox("Dictionary Compression");
+        dictionaryCheckBox.setValue(true); // Default ON
+        
+        final PCheckBox trieCheckBox = Element.newPCheckBox("Widget Trie Prediction");
+        trieCheckBox.setValue(true); // Default ON
+        
+        final PCheckBox codeT5CheckBox = Element.newPCheckBox("CodeT5/FastAPI Prediction");
+        codeT5CheckBox.setValue(true); // Default ON
+        
+        featurePanel.add(dictionaryCheckBox);
+        featurePanel.add(trieCheckBox);
+        featurePanel.add(codeT5CheckBox);
+        
+        mainPanel.add(featurePanel);
+        
+        // Add checkbox handlers to control WebSocket features
+        dictionaryCheckBox.addValueChangeHandler(event -> {
+            boolean enabled = event.getData();
+            // Use static method to control dictionary globally
+            com.ponysdk.core.server.websocket.WebSocket.setDictionaryEnabledGlobally(enabled);
+            log.info("Dictionary compression {}", enabled ? "ENABLED" : "DISABLED");
+        });
+        
+        trieCheckBox.addValueChangeHandler(event -> {
+            boolean enabled = event.getData();
+            // Use static method to control trie globally
+            com.ponysdk.core.server.websocket.WebSocket.setTrieEnabledGlobally(enabled);
+            log.info("Widget Trie prediction {}", enabled ? "ENABLED" : "DISABLED");
+        });
+        
+        codeT5CheckBox.addValueChangeHandler(event -> {
+            boolean enabled = event.getData();
+            // Use static method to control CodeT5 globally
+            com.ponysdk.core.server.websocket.WebSocket.setCodeT5EnabledGlobally(enabled);
+            log.info("CodeT5/FastAPI prediction {}", enabled ? "ENABLED" : "DISABLED");
+        });
+        
         // Results area
         final PVerticalPanel resultsPanel = Element.newPVerticalPanel();
         resultsPanel.setSpacing(10);

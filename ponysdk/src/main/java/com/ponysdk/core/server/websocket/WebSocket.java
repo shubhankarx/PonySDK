@@ -80,7 +80,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private final ModelValueDictionary dictionary = new ModelValueDictionary(2);
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
     private static final int BATCH_THRESHOLD = 2; // Reduced to capture button click patterns
-    private boolean dictionaryEnabled = true; // Enabled by default
+    private static boolean dictionaryEnabled = true; // Enabled by default (static for runtime control)
+    
+    // Feature control flags for testing different combinations (static for runtime control)
+    private static boolean trieEnabled = true;        // Widget trie prediction enabled by default
+    private static boolean codeT5Enabled = true;      // CodeT5/FastAPI prediction enabled by default
     
     // Track pattern IDs for sequence learning (groups of 3)
     private final List<Integer> patternSequence = new ArrayList<>(3);
@@ -1229,6 +1233,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 PRED.info("Flushing batch with END_OF_PROCESSING");
             }   
             flushCurrentBatch();
+            
+            // FIX: Prevent double END encoding - dictionary already sent END
+            if (model == ServerToClientModel.END) {
+                return;
+            }
         }
 
         // Skip dictionary for critical protocol frames
@@ -1470,6 +1479,74 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             }
         }
     }
+    
+    /**
+     * Enable or disable widget trie prediction feature.
+     * When disabled, widget interaction sequences are not tracked and no predictions are made.
+     */
+    public void setTrieEnabled(boolean enabled) {
+        if (this.trieEnabled != enabled) {
+            log.info("Widget Trie prediction {} for UIContext #{}", 
+                    enabled ? "enabled" : "disabled", 
+                    uiContext != null ? uiContext.getID() : "?");
+            
+            this.trieEnabled = enabled;
+            if (!enabled) {
+                // Clear widget interaction tracking when disabling
+                synchronized (widgetSequenceLock) {
+                    widgetInteractionSequence.clear();
+                    widgetMessagePatterns.clear();
+                    currentWidgetMessages.clear();
+                    lastPredictedWidget = null;
+                }
+            }
+        }
+    }
+    
+    /**
+     * Enable or disable CodeT5/FastAPI prediction feature.
+     * When disabled, no HTTP calls are made to the prediction service.
+     */
+    public void setCodeT5Enabled(boolean enabled) {
+        if (this.codeT5Enabled != enabled) {
+            log.info("CodeT5/FastAPI prediction {} for UIContext #{}", 
+                    enabled ? "enabled" : "disabled", 
+                    uiContext != null ? uiContext.getID() : "?");
+            
+            this.codeT5Enabled = enabled;
+            if (!enabled) {
+                // Clear pattern buffer when disabling
+                synchronized (predictionLock) {
+                    currentPatternBuffer.clear();
+                    lastPrediction = null;
+                }
+            }
+        }
+    }
+    
+    /**
+     * Static method for global dictionary control from UI
+     */
+    public static void setDictionaryEnabledGlobally(boolean enabled) {
+        log.info("Dictionary compression {} globally", enabled ? "ENABLED" : "DISABLED");
+        dictionaryEnabled = enabled;
+    }
+    
+    /**
+     * Static method for global trie control from UI
+     */
+    public static void setTrieEnabledGlobally(boolean enabled) {
+        log.info("Widget Trie prediction {} globally", enabled ? "ENABLED" : "DISABLED");
+        trieEnabled = enabled;
+    }
+    
+    /**
+     * Static method for global CodeT5 control from UI
+     */
+    public static void setCodeT5EnabledGlobally(boolean enabled) {
+        log.info("CodeT5/FastAPI prediction {} globally", enabled ? "ENABLED" : "DISABLED");
+        codeT5Enabled = enabled;
+    }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
         try {
@@ -1613,6 +1690,28 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         Integer ref = null; // Declare ref here
         if (currentBatch.isEmpty()) return;
         
+        // CRITICAL FIX: Dictionary Client-Server Synchronization Issue
+        // PROBLEM: Server was recording patterns even when dictionary was disabled (during 0-2s UI setup),
+        // but client never received these pattern definitions. Later, server would send DICTIONARY_REFERENCE #1
+        // but client would respond "Unknown instruction type" because it never got pattern #1's definition.
+        // This caused UI breakage: buttons stopped working, "Unknown instruction" errors flooded console.
+        // ROOT CAUSE: flushCurrentBatch() called dictionary.recordPattern() regardless of dictionaryEnabled state.
+        // SOLUTION: Only use dictionary logic when enabled, ensuring perfect client-server pattern synchronization.
+        if (!dictionaryEnabled) {
+            PRED.debug("Dictionary disabled - sending raw messages (batch size: {})", currentBatch.size());
+            try {
+                for (ModelValuePair p : currentBatch) {
+                    websocketPusher.encode(p.getModel(), p.getValue());
+                    if (listener != null) listener.onOutgoingPonyFrame(p.getModel(), p.getValue());
+                }
+            } catch (final Exception e) {
+                log.error("Error sending raw batch for UIContext #{}", uiContext.getID(), e);
+            } finally {
+                currentBatch.clear();
+            }
+            return; // Skip dictionary logic entirely
+        }
+        
         try {
             if (loggerOut.isTraceEnabled())
                 loggerOut.trace("UIContext #{} : Flushing batch of size {}", this.uiContext.getID(), currentBatch.size());
@@ -1676,7 +1775,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                             this.uiContext.getID(), newId, snapshot.size());
                 
                 // CRITICAL: Send pattern definition to client so it can store it locally
-                // Protocol: DICTIONARY_PATTERN_START + pattern_contents + DICTIONARY_PATTERN_END
+                // 
+                // PROTOCOL COMPLIANCE FIX (Sept 2025):
+                // PROBLEM: Server-client dictionary sync failure causing "Pattern not found" errors
+                // ROOT CAUSE: This inline pattern transmission bypassed the beginObject()/endObject() 
+                //            contract that UIBuilder.java expects (see sendDictionaryPattern() method)
+                // SYMPTOMS: Client logs "Unknown instruction type: TEXT/END", UI objects fail to create
+                // COMPETITIVE ANALYSIS: Protocol violations create O(n²) debugging complexity due to 
+                //                      cascading failures - one broken message corrupts all subsequent
+                // 
+                // Send the pattern inline without protocol wrappers
                 websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
                 
@@ -1689,17 +1797,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 // End pattern definition
                 websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_END, null);
-                
-                // Close and flush the definition message to ensure client stores it and latency is tracked
                 websocketPusher.encode(ServerToClientModel.END, null);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.END, null);
                 flush0();
                 
                 PRED.info("SYNC FIX: Sent pattern definition #{} to client - future references will work", newId);
                 
-                // Now send the actual UI update as a separate message
-                // Start a new message for the actual content
-                beginObject();
+                // Continue to execute the actual message after sending pattern definition
+                // The pattern definition was just to teach the client, now execute the actual command
             }
             else if ((ref = dictionary.getPatternId(snapshot)) != null) {
 
@@ -1835,18 +1940,22 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
         
         try {
-            // Store complete message pattern for this widget
-            widgetMessagePatterns.put(currentWidgetKey, new ArrayList<>(currentWidgetMessages));
-            
-            // Add widget to interaction sequence
-            widgetInteractionSequence.add(currentWidgetKey);
-            
-            PRED.info("Completed widget interaction: {} with {} messages", 
-                     currentWidgetKey, currentWidgetMessages.size());
-            
-            // Try to predict next widget (if we have 2 in sequence)
-            if (widgetInteractionSequence.size() >= 2) {
-                tryPredictNextWidget();
+            // Store complete message pattern for this widget (only if trie is enabled)
+            if (trieEnabled) {
+                widgetMessagePatterns.put(currentWidgetKey, new ArrayList<>(currentWidgetMessages));
+                
+                // Add widget to interaction sequence
+                widgetInteractionSequence.add(currentWidgetKey);
+                
+                PRED.info("Completed widget interaction: {} with {} messages", 
+                         currentWidgetKey, currentWidgetMessages.size());
+                
+                // Try to predict next widget (if we have 2 in sequence)
+                if (widgetInteractionSequence.size() >= 2) {
+                    tryPredictNextWidget();
+                }
+            } else {
+                PRED.debug("Widget Trie disabled - skipping interaction tracking for {}", currentWidgetKey);
             }
             
             // Validate previous prediction (if we had one)
@@ -1872,6 +1981,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Try to predict the next widget based on the current sequence.
      */
     private void tryPredictNextWidget() {
+        if (!trieEnabled) return;  // Feature control check
         if (widgetInteractionSequence.size() < 2) return;
         
         try {
@@ -1930,6 +2040,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Validate our previous prediction against the actual widget.
      */
     private void validatePrediction() {
+        if (!trieEnabled) return;  // Feature control check
         if (lastPredictedWidget == null || currentWidgetKey == null) {
             return;
         }
@@ -2048,6 +2159,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * blocking the main WebSocket processing thread.
      */
     private void sendJsonPostRequestUsingHttpURLConnection(List<String> instructionsToSend) {
+        if (!codeT5Enabled) {
+            PRED.debug("CodeT5/FastAPI disabled - skipping HTTP call for {} instructions", instructionsToSend.size());
+            return;  // Feature control check
+        }
+        
         // Wrap the network call in a new thread to avoid blocking the current thread.
         new Thread(() -> {
             final long startNanos = System.nanoTime();
@@ -2230,6 +2346,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     // The core logic for the triplet-only prediction algorithm.
     private void processInstructionForPrediction(final String componentType, final String fullInstruction) {
+        if (!codeT5Enabled) {
+            PRED.debug("CodeT5/FastAPI disabled - skipping pattern processing for component: {}", componentType);
+            return;  // Feature control check
+        }
+        
         // Synchronize to ensure that buffer modifications and checks are atomic.
         synchronized (predictionLock) {
             // Add the new instruction to the buffer for pattern evaluation.
@@ -2297,6 +2418,8 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     // Sends any buffered instructions individually to the prediction service.
     private void flushBufferedInstructions() {
+        if (!codeT5Enabled) return;  // Feature control check
+        
         synchronized (predictionLock) {
             // Check if there are any instructions left in the buffer.
             if (!currentPatternBuffer.isEmpty()) {

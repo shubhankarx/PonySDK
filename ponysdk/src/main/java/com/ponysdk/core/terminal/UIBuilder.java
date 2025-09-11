@@ -247,19 +247,90 @@ public class UIBuilder {
             } else if (ServerToClientModel.TYPE_HISTORY == model) {
                 processHistory(buffer, binaryModel.getStringValue());
             } else if (ServerToClientModel.DICTIONARY_PATTERN_START == model) {
-                // Dictionary patterns must be handled directly, not via widget updates
+                /*
+                 * CRITICAL PROTOCOL FIX: Dictionary Pattern Message Boundary Handling
+                 * =====================================================================
+                 * 
+                 * PROBLEM BACKGROUND:
+                 * The PonySDK WebSocket protocol uses a consistent message structure where every 
+                 * message begins with beginObject() and ends with endObject(). The endObject()
+                 * method automatically appends a ServerToClientModel.END marker to signal 
+                 * message completion.
+                 * 
+                 * Standard message structure:
+                 *   beginObject() → [message_content] → endObject() 
+                 *   Transmitted as: [message_content] → END
+                 * 
+                 * All normal message handlers (TYPE_UPDATE, TYPE_CREATE, etc.) correctly follow
+                 * this protocol by reading content in loops that terminate on END markers:
+                 *   do { process_content } while (nextModel != END)
+                 * 
+                 * THE BUG:
+                 * Dictionary pattern messages from handleDictionaryRequest() follow the same
+                 * protocol structure:
+                 *   beginObject() → DICTIONARY_PATTERN_START → pattern_data → DICTIONARY_PATTERN_END → endObject()
+                 *   Transmitted as: DICTIONARY_PATTERN_START → pattern_data → DICTIONARY_PATTERN_END → END
+                 * 
+                 * However, the original dictionary handler violated the protocol by only reading
+                 * until DICTIONARY_PATTERN_END and then returning immediately, leaving the END
+                 * marker unprocessed in the buffer.
+                 * 
+                 * CONSEQUENCES:
+                 * 1. Buffer misalignment: Leftover END markers cause subsequent reads to fail
+                 * 2. "Unknown instruction type: END" warnings flood the logs  
+                 * 3. ArrayIndexOutOfBoundsException when buffer position exceeds boundaries
+                 * 4. Dictionary request loops: Client never properly stores patterns due to 
+                 *    parsing failures, causing infinite re-requests
+                 * 5. UI object synchronization failures: Objects created on server never
+                 *    appear on client due to corrupted message streams
+                 * 
+                 * THE FIX:
+                 * Ensure dictionary pattern handlers respect the protocol contract by consuming
+                 * the END marker that endObject() always appends. This maintains buffer 
+                 * synchronization and prevents downstream parsing errors.
+                 * 
+                 * VALIDATION:
+                 * - Check buffer availability before reading END marker (defensive programming)
+                 * - Log protocol violations if unexpected data is found
+                 * - Gracefully handle edge cases without crashing the system
+                 * 
+                 * This fix ensures long-term protocol consistency and prevents similar bugs
+                 * in future WebSocket message handlers.
+                 */
                 final int patternId = binaryModel.getIntValue();
-                log.fine("Processing dictionary pattern start: " + patternId);
+                log.info("Processing dictionary pattern definition: " + patternId);
                 List<ModelValuePair> pattern = new ArrayList<>();
                 BinaryModel bm;
-                // Collect all model-value pairs in the pattern
-                while ((bm = buffer.readBinaryModel()).getModel() != ServerToClientModel.DICTIONARY_PATTERN_END) {
-                    // Extract value according to type
+                
+                // Collect all model-value pairs in the pattern until DICTIONARY_PATTERN_END
+                while (buffer.hasEnoughKeyBytes()) {
+                    bm = buffer.readBinaryModel();
+                    if (bm.getModel() == ServerToClientModel.DICTIONARY_PATTERN_END) {
+                        break; // End of pattern definition reached
+                    }
+                    
+                    // Extract typed value and add to pattern
                     Object val = extractValue(bm);
                     pattern.add(new ModelValuePair(bm.getModel(), val));
                 }
-                // Store pattern in client-side dictionary
+                
+                // Store pattern in client-side dictionary for future reference resolution
                 clientTracker.recordPattern(patternId, pattern);
+                log.info("Successfully stored dictionary pattern " + patternId + " with " + pattern.size() + " elements");
+                
+                // PROTOCOL COMPLIANCE: Consume the END marker that endObject() appended
+                // This is critical for maintaining buffer synchronization with subsequent messages
+                if (buffer.hasEnoughKeyBytes()) {
+                    BinaryModel endMarker = buffer.readBinaryModel();
+                    if (endMarker.getModel() != ServerToClientModel.END) {
+                        log.warning("Protocol violation: Expected END marker after dictionary pattern " + 
+                                  patternId + ", found: " + endMarker.getModel() + ". Buffer may be corrupted.");
+                    }
+                } else {
+                    log.warning("Buffer exhausted before END marker for dictionary pattern " + 
+                              patternId + ". This may indicate incomplete message transmission.");
+                }
+                
                 return;
             } else if (ServerToClientModel.DICTIONARY_REFERENCE == model) {
                 // Reference resolution must be handled directly
