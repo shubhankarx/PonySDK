@@ -1444,11 +1444,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 uiContext.acquire();
                 try {
                     beginObject();
-                    encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
+                    // encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId); // Causes recursion
+                    websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
                     for (ModelValuePair pair : pattern) {
                         websocketPusher.encode(pair.getModel(), pair.getValue());
                     }
-                    encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                    // encode(ServerToClientModel.DICTIONARY_PATTERN_END, null); // Causes recursion
+                    websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
                     endObject();
                     flush0();
                 } finally {
