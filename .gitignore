@@ -5,3 +5,4 @@
 /ponysdk/out/*.log
 *.pid
 *.log
+*.log*
