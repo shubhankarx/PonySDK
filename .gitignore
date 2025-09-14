@@ -5,3 +5,4 @@
 /ponysdk/out/*.log
 *.pid
 *.log
+sample/run_sample_spring_gc.log*
