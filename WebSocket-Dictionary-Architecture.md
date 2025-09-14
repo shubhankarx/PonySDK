@@ -568,12 +568,15 @@ public void handleDictionaryRequest(final int patternId) {
         beginObject();
         encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
         for (ModelValuePair pair : pattern) {
-            encode(pair.getModel(), pair.getValue());
+            websocketPusher.encode(pair.getModel(), pair.getValue()); // Fixed: Use direct encode to prevent recursion
         }
         encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
         endObject();
     }
 }
+```
+
+**Critical Fix**: Line 1449 in WebSocket.java was changed from `encode()` to `websocketPusher.encode()` in the pattern transmission loop to prevent infinite recursion when handling dictionary requests from clients.
 ```
 
 ### Protocol Compliance

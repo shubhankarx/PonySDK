@@ -1446,7 +1446,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     beginObject();
                     encode(ServerToClientModel.DICTIONARY_PATTERN_START, patternId);
                     for (ModelValuePair pair : pattern) {
-                        encode(pair.getModel(), pair.getValue());
+                        websocketPusher.encode(pair.getModel(), pair.getValue());
                     }
                     encode(ServerToClientModel.DICTIONARY_PATTERN_END, null);
                     endObject();
