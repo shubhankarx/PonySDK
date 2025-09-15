@@ -25,6 +25,10 @@ package com.ponysdk.core.server.websocket;
 import com.ponysdk.core.model.ServerToClientModel;
 import java.util.Objects;
 import java.util.EnumSet;
+import java.util.Arrays;
+
+// Import for GWT JSONArray - need to check if this is available in server-side context
+// If not available, we'll handle it through reflection or instanceof checks
 
 /**
  * Immutable pair of ServerToClientModel and its associated value for pattern detection.
@@ -52,12 +56,12 @@ public final class ModelValuePair {
         if (this == o) return true;
         if (!(o instanceof ModelValuePair)) return false;
         final ModelValuePair that = (ModelValuePair) o;
-        return model == that.model && Objects.equals(value, that.value);
+        return model == that.model && ContentComparator.contentEquals(value, that.value);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(model, value);
+        return Objects.hash(model, ContentComparator.contentHashCode(value));
     }
 
     @Override
