@@ -6,3 +6,8 @@
 *.pid
 *.log
 sample/run_sample_spring_gc.log*
+
+# WebSocket Optimization Experiment Results
+results/
+sample/results/
+**/results/

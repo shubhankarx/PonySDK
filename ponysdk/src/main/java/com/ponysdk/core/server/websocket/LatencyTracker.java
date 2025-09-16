@@ -478,6 +478,25 @@ public final class LatencyTracker implements WebSocket.Listener {
         }
     }
     
+    // ========== Getter Methods for MetricsExporter Integration ==========
+
+    public long getMinLatencyNanos() { return minLatencyNanos.get(); }
+    public long getMaxLatencyNanos() { return maxLatencyNanos.get(); }
+    public long getDictionaryHitCount() { return dictionaryHitCount.get(); }
+    public long getDictionaryMissCount() { return dictionaryMissCount.get(); }
+    public long getTrieQueryCount() { return trieQueryCount.get(); }
+    public long getTrieHitCount() { return trieHitCount.get(); }
+    public long getTrieMissCount() { return trieMissCount.get(); }
+    public long getTotalTrieLatencyNanos() { return totalTrieLatencyNanos.get(); }
+    public long getCodeT5QueryCount() { return codeT5QueryCount.get(); }
+    public long getCodeT5SuccessCount() { return codeT5SuccessCount.get(); }
+    public long getCodeT5ErrorCount() { return codeT5ErrorCount.get(); }
+    public long getTotalCodeT5LatencyNanos() { return totalCodeT5LatencyNanos.get(); }
+    public long getMinCodeT5LatencyNanos() { return minCodeT5LatencyNanos.get(); }
+    public long getMaxCodeT5LatencyNanos() { return maxCodeT5LatencyNanos.get(); }
+    public long getTotalTransmissions() { return totalTransmissions.get(); }
+    public long getTotalTransmittedBytes() { return totalTransmittedBytes.get(); }
+
     // WebSocket.Listener unused callbacks
     @Override public void onIncomingText(String text) {}
     @Override public void onOutgoingWebSocketFrame(int headerLength, int payloadLength) {}

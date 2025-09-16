@@ -185,13 +185,16 @@ public class UISampleEntryPoint3 implements EntryPoint {
         featurePanel.add(featureLabel);
         
         final PCheckBox dictionaryCheckBox = Element.newPCheckBox("Dictionary Compression");
-        dictionaryCheckBox.setValue(true); // Default ON
+        // dictionaryCheckBox.setValue(true); // Old hardcoded - kept for reference
+        dictionaryCheckBox.setValue(UIContext.get().getConfiguration().isDictionaryCompressionEnabled());
         
         final PCheckBox trieCheckBox = Element.newPCheckBox("Widget Trie Prediction");
-        trieCheckBox.setValue(true); // Default ON
+        // trieCheckBox.setValue(true); // Old hardcoded - kept for reference
+        trieCheckBox.setValue(UIContext.get().getConfiguration().isTriePatternPredictionEnabled());
         
         final PCheckBox codeT5CheckBox = Element.newPCheckBox("CodeT5/FastAPI Prediction");
-        codeT5CheckBox.setValue(true); // Default ON
+        // codeT5CheckBox.setValue(true); // Old hardcoded - kept for reference
+        codeT5CheckBox.setValue(UIContext.get().getConfiguration().isCodeT5SemanticAnalysisEnabled());
         
         featurePanel.add(dictionaryCheckBox);
         featurePanel.add(trieCheckBox);

@@ -6,6 +6,8 @@ http://www.springframework.org/schema/beans http://www.springframework.org/schem
 http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-3.0.xsd
 http://www.springframework.org/schema/task http://www.springframework.org/schema/task/spring-task-3.0.xsd">
 
+    <!-- Enable system property placeholder resolution for dynamic configuration -->
+    <context:property-placeholder/>
 
     <bean name="applicationManager" class="com.ponysdk.impl.spring.server.SpringApplicationManager">
         <property name="configuration" ref="configuration" />
@@ -20,6 +22,13 @@ http://www.springframework.org/schema/task http://www.springframework.org/schema
         <property name="clientConfigFile" value="etc/client_application.xml" />
         <property name="sessionTimeout" value="20" />
         <property name="entryPointClass" value="com.ponysdk.sample.client.UISampleEntryPoint" />
+
+        <!-- WebSocket features (Dictionary/Trie/CodeT5) controlled directly in WebSocket.java -->
+        <property name="latencyTrackingEnabled" value="${ponysdk.websocket.latency.enabled:true}" />
+        <property name="experimentRunId" value="${ponysdk.experiment.run.id:run_default}" />
+        <property name="experimentResultsDir" value="${ponysdk.experiment.results.dir:./results}" />
+        <property name="dictionaryFrequencyThreshold" value="${ponysdk.websocket.dictionary.threshold:2}" />
+        <property name="codeT5ServiceUrl" value="${ponysdk.websocket.codet5.url:http://127.0.0.1:8000/generate}" />
         <property name="javascript">
             <list>
                 <value>script/jquery-3.0.0.min.js</value>

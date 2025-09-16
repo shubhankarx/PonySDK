@@ -32,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.ponysdk.core.server.application.Application;
+import com.ponysdk.core.server.application.ApplicationConfiguration;
 import com.ponysdk.core.server.application.ApplicationManager;
 import com.ponysdk.core.server.servlet.SessionManager;
 import com.ponysdk.core.server.stm.TxnContext;
@@ -45,8 +46,61 @@ public class WebSocketServlet extends org.eclipse.jetty.websocket.servlet.WebSoc
     private final ApplicationManager applicationManager;
     private WebsocketMonitor monitor;
 
+    // Shared metrics tracking for all WebSocket connections
+    private LatencyTracker sharedLatencyTracker;
+    private MetricsExporter metricsExporter;
+
     public WebSocketServlet(final ApplicationManager applicationManager) {
         this.applicationManager = applicationManager;
+        initializeMetrics();
+    }
+
+    /**
+     * Initialize shared metrics tracking system.
+     * Creates single LatencyTracker and MetricsExporter for all connections.
+     */
+    private void initializeMetrics() {
+        try {
+            // Create shared LatencyTracker for all WebSocket connections
+            sharedLatencyTracker = new LatencyTracker();
+
+            // Initialize MetricsExporter if latency tracking is enabled
+            if (applicationManager.getConfiguration().isLatencyTrackingEnabled()) {
+                metricsExporter = new MetricsExporter(
+                    applicationManager.getConfiguration(),
+                    sharedLatencyTracker
+                );
+
+                // Start periodic export every 30 seconds
+                metricsExporter.startPeriodicExport(30);
+
+                log.info("MetricsExporter initialized for experiment run: {} ({})",
+                    applicationManager.getConfiguration().getExperimentRunId(),
+                    getConfigurationType());
+            }
+
+            log.info("Shared LatencyTracker initialized for WebSocket metrics");
+
+        } catch (Exception e) {
+            log.error("Failed to initialize metrics system: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Get configuration type for logging purposes.
+     */
+    private String getConfigurationType() {
+        ApplicationConfiguration config = applicationManager.getConfiguration();
+        boolean dict = config.isDictionaryCompressionEnabled();
+        boolean trie = config.isTriePatternPredictionEnabled();
+        boolean codet5 = config.isCodeT5SemanticAnalysisEnabled();
+
+        if (dict && trie && codet5) return "ALL_ON";
+        if (dict && !trie && !codet5) return "DICTIONARY_ONLY";
+        if (!dict && !trie && codet5) return "CODET5_ONLY";
+        if (!dict && trie && !codet5) return "TRIE_ONLY";
+        if (!dict && !trie && !codet5) return "ALL_OFF";
+        return "CUSTOM";
     }
 
     @Override
@@ -64,7 +118,11 @@ public class WebSocketServlet extends org.eclipse.jetty.websocket.servlet.WebSoc
         
         // Initialize LatencyTracker for performance monitoring
         try {
-            webSocket.setListener(new LatencyTracker());
+            if (sharedLatencyTracker != null) {
+                webSocket.setListener(sharedLatencyTracker);
+            } else {
+                webSocket.setListener(new LatencyTracker());
+            }
             System.out.println("LatencyTracker initialized successfully");
         } catch (Exception e) {
             System.err.println("Failed to initialize LatencyTracker: " + e.getMessage());

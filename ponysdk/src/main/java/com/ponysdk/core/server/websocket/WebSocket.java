@@ -842,6 +842,17 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             uiContext = new UIContext(this, context, applicationManager.getConfiguration(), request);
             log.info("Creating a new {}", uiContext);
 
+            // Initialize Trie and CodeT5 features from ApplicationConfiguration
+            final ApplicationConfiguration config = uiContext.getConfiguration();
+            // WebSocket.trieEnabled = true; // Original hardcoded - kept for reference
+            // WebSocket.codeT5Enabled = true; // Original hardcoded - kept for reference
+            WebSocket.trieEnabled = config.isTriePatternPredictionEnabled();
+            WebSocket.codeT5Enabled = config.isCodeT5SemanticAnalysisEnabled();
+            log.info("Trie prediction {} | CodeT5 analysis {} for UIContext #{}",
+                    trieEnabled ? "enabled" : "disabled",
+                    codeT5Enabled ? "enabled" : "disabled",
+                    uiContext.getID());
+
             final CommunicationSanityChecker communicationSanityChecker = new CommunicationSanityChecker(uiContext);
             context.registerUIContext(uiContext);
             java.util.List<java.util.List<String>> knownPatterns = new java.util.ArrayList<>();
@@ -882,8 +893,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     if (isAlive()) {
                         uiContext.acquire();
                         try {
-                            setDictionaryEnabled(true);
-                            log.info("Dictionary compression enabled for UIContext #{}", uiContext.getID());
+                            // setDictionaryEnabled(true); // Original hardcoded - kept for reference
+                            setDictionaryEnabled(uiContext.getConfiguration().isDictionaryCompressionEnabled());
+                            log.info("Dictionary compression {} for UIContext #{}",
+                                    uiContext.getConfiguration().isDictionaryCompressionEnabled() ? "enabled" : "disabled",
+                                    uiContext.getID());
                         } finally {
                             uiContext.release();
                         }
