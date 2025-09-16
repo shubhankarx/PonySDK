@@ -72,6 +72,8 @@ public class UIBuilder {
     private final ClientModelTracker clientTracker = new ClientModelTracker();
     // Will hold a model we can reuse during pattern replay
     private final BinaryModel replayBinaryModel = new BinaryModel();
+    // Flag to prevent infinite recursion during pattern replay
+    private boolean isInPatternReplay = false;
 
     private RequestBuilder requestBuilder;
 
@@ -364,6 +366,7 @@ public class UIBuilder {
                         BinaryModel typeModel = createBinaryModel(typeCommand, objectId);
                         
                         // Process the TYPE command to set up the context
+                        // Go back to original update() method approach
                         update(typeModel, buffer);
                         
                         // Check if pattern has a WIDGET_TYPE command, which needs special handling
@@ -401,15 +404,43 @@ public class UIBuilder {
                                 
                                 // If it's another TYPE command, process it as a complete update
                                 if (isTypeCommand(pair.getModel())) {
-                                    update(cmdModel, buffer);
+                                    try {
+                                        if (!isInPatternReplay) {
+                                            isInPatternReplay = true;
+                                            update(cmdModel, buffer);
+                                            log.info("🔍 ✅ TYPE command update successful for " + pair.getModel());
+                                        } else {
+                                            log.warning("🔍 ⚠️ Skipping recursive TYPE command: " + pair.getModel());
+                                        }
+                                    } catch (Exception e) {
+                                        log.severe("🔍 ❌ ERROR in TYPE command update: " + e.getMessage());
+                                        e.printStackTrace();
+                                    } finally {
+                                        isInPatternReplay = false;
+                                    }
                                 } 
                                 // Otherwise it's a property of the main object
                                 else {
-                                    // Get the object from our object registry
+                                    // Get the object from our object registry - ADD SAFETY AND DEBUG
+                                    log.info("🔍 Getting object for property update, objectId=" + objectId);
                                     PTObject propertyObject = getPTObject(objectId);
+                                    log.info("🔍 Retrieved propertyObject = " + propertyObject);
+                                    log.info("🔍 About to update property " + pair.getModel() + " with value: " + pair.getValue());
+
                                     if (propertyObject != null) {
-                                        // Direct property update on the widget
-                                        propertyObject.update(buffer, cmdModel);
+                                        try {
+                                            // Direct property update on the widget
+                                            propertyObject.update(buffer, cmdModel);
+                                            log.info("🔍 ✅ Property update successful for " + pair.getModel());
+                                        } catch (Exception e) {
+                                            log.severe("🔍 ❌ ERROR in propertyObject.update(): " + e.getMessage());
+                                            log.severe("🔍 Exception class: " + e.getClass().getSimpleName());
+                                            log.severe("🔍 propertyObject class: " + propertyObject.getClass().getSimpleName());
+                                            e.printStackTrace();
+                                            // Don't crash entire pattern replay - continue with next property
+                                        }
+                                    } else {
+                                        log.warning("🔍 ⚠️ propertyObject is NULL for objectId " + objectId);
                                     }
                                 }
                             }

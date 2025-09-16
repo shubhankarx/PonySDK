@@ -1468,12 +1468,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Enable or disable dictionary compression
      */
     public void setDictionaryEnabled(boolean enabled) {
-        if (this.dictionaryEnabled != enabled) {
+        if (WebSocket.dictionaryEnabled != enabled) {
             log.info("Dictionary compression {} for UIContext #{}", 
                     enabled ? "enabled" : "disabled", 
                     uiContext != null ? uiContext.getID() : "?");
             
-            this.dictionaryEnabled = enabled;
+            WebSocket.dictionaryEnabled = enabled;
             if (!enabled) {
                 // Clear current batch and dictionary when disabling
                 currentBatch.clear();
