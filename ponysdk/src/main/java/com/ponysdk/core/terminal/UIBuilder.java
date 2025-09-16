@@ -378,9 +378,9 @@ public class UIBuilder {
                         // Special handling for TYPE_CREATE: inject WIDGET_TYPE first if present
                         if (typeCommand == ServerToClientModel.TYPE_CREATE && widgetTypePair != null) {
                             BinaryModel widgetTypeModel = createBinaryModel(widgetTypePair.getModel(), widgetTypePair.getValue());
-                            PTObject ptObject = getPTObject(objectId);
-                            if (ptObject != null) {
-                                ptObject.update(buffer, widgetTypeModel);
+                            PTObject widgetObject = getPTObject(objectId);
+                            if (widgetObject != null) {
+                                widgetObject.update(buffer, widgetTypeModel);
                             }
                         }
                         
@@ -406,10 +406,10 @@ public class UIBuilder {
                                 // Otherwise it's a property of the main object
                                 else {
                                     // Get the object from our object registry
-                                    PTObject ptObject = getPTObject(objectId);
-                                    if (ptObject != null) {
+                                    PTObject propertyObject = getPTObject(objectId);
+                                    if (propertyObject != null) {
                                         // Direct property update on the widget
-                                        ptObject.update(buffer, cmdModel);
+                                        propertyObject.update(buffer, cmdModel);
                                     }
                                 }
                             }
