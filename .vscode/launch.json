@@ -1,0 +1,42 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "DictionaryExtractorTool",
+            "request": "launch",
+            "mainClass": "com.ponysdk.core.server.websocket.DictionaryExtractorTool",
+            "projectName": "ponysdk"
+        },
+        {
+            "type": "java",
+            "name": "Main",
+            "request": "launch",
+            "mainClass": "com.ponysdk.impl.java.Main",
+            "projectName": "sample"
+        },
+        {
+            "type": "java",
+            "name": "MainSpring",
+            "request": "launch",
+            "mainClass": "com.ponysdk.impl.spring.MainSpring",
+            "projectName": "sample"
+        },
+        {
+            "type": "java",
+            "name": "FastApiTestClient",
+            "request": "launch",
+            "mainClass": "com.ponysdk.sample.client.FastApiTestClient",
+            "projectName": "sample"
+        }
+    ]
+}

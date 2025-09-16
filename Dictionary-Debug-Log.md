@@ -567,3 +567,187 @@ WARNING: Unknown instruction type : TEXT => Bid: 1.08017
 2. **High**: Add client-side error recovery after stack overflow
 3. **Medium**: Implement pattern definition retry mechanism
 4. **Low**: Server-side improvements (already working correctly)
+
+---
+
+## DEEP DIVE ANALYSIS: Format and ID Mismatch Investigation
+
+### Executive Summary
+
+After extensive code analysis of server-client pattern flow, the root cause is **format incompatibilities** between server and client pattern storage systems, not simple object lifecycle issues.
+
+### Reference Points for Debugging
+
+**Key Files Analyzed:**
+- `ModelValueDictionary.java:82-172` - Server pattern storage
+- `WebSocket.java:1790-1801` - Server pattern transmission
+- `UIBuilder.java:300-319` - Client pattern reception
+- `UIBuilder.java:489-506` - Client value extraction
+- `ClientModelTracker.java` - Client pattern storage
+
+### Critical Discovery: Server-Client Format Mismatch
+
+#### Server-Side Pattern Format (ModelValueDictionary.java)
+
+**Storage Structure:**
+```java
+// Line 108: Pattern normalization
+final List<ModelValuePair> normalizedPattern = new ArrayList<>(pattern);
+
+// Line 142: Immutable storage
+idToPattern.put(id, Collections.unmodifiableList(new ArrayList<>(normalizedPattern)));
+
+// Server ModelValuePair uses ContentComparator for complex equality
+```
+
+**Server Pattern Example (From Terminal Logs):**
+```
+Pattern #1 contents: [TYPE_UPDATE=20]  ← Server stores Integer(20)
+Pattern stored in dictionary: 1 operations, threshold=2
+```
+
+#### Client-Side Pattern Format (UIBuilder.java + ClientModelTracker.java)
+
+**Reception Process:**
+```java
+// Line 313: Value extraction during reception
+Object val = extractValue(bm);  ← TYPE CONVERSION HAPPENS HERE
+pattern.add(new ModelValuePair(bm.getModel(), val));
+
+// extractValue() Line 496: Type conversion
+case INTEGER: return bm.getIntValue();  ← Returns int, not Integer
+```
+
+**Client Pattern Storage:**
+```java
+// ClientModelTracker uses simple Objects.equals(), not ContentComparator
+// Different ModelValuePair class than server
+```
+
+### The "1 entries" vs Multiple Objects Problem Explained
+
+**From Browser Console:**
+```
+INFO: Recorded pattern ID 1 with 1 entries  ← Pattern stored correctly
+WARNING: PTObject #20 not found                ← Object lookup fails
+WARNING: PTObject #21 not found                ← These shouldn't be accessed
+WARNING: PTObject #22 not found                ← Pattern only has 1 entry!
+```
+
+**Root Cause Analysis:**
+
+1. **Pattern Content**: `[TYPE_UPDATE=20]` (1 entry, references object #20)
+2. **Pattern Replay**: Should only access object #20
+3. **Actual Behavior**: Tries to access objects #20, #21, #22
+
+**The Issue**: Pattern replay logic in `UIBuilder.java:355-411` creates **fake buffer** for recursive `update()` calls, corrupting the replay process.
+
+#### Critical Code Path Analysis
+
+**Problem Code (UIBuilder.java:361):**
+```java
+// Pattern replay calls update() recursively with fake buffer
+update(typeModel, buffer);  ← Buffer is NOT real message buffer
+```
+
+**Consequence**: Recursive call expects real WebSocket message buffer but gets pattern replay buffer, causing:
+- Object lookup failures
+- Buffer state corruption
+- Wrong object ID interpretation
+
+### Format Mismatch Points
+
+#### Issue 1: Value Type Conversion
+- **Server stores**: `Integer(20)`
+- **Wire transmission**: Binary int
+- **Client receives**: `int(20)` (primitive)
+- **Pattern matching**: `Integer(20).equals(int(20))` → **FALSE**
+
+#### Issue 2: ModelValuePair Class Incompatibility
+- **Server**: `com.ponysdk.core.server.websocket.ModelValuePair` (ContentComparator)
+- **Client**: `ClientModelTracker.ModelValuePair` (simple Objects.equals())
+- **Result**: Same patterns have different hashCodes/equality
+
+#### Issue 3: Buffer Handling in Pattern Replay
+- **Server**: Real WebSocket message buffers
+- **Client replay**: Fake buffer created for pattern processing
+- **Result**: Object lookup and buffer operations fail
+
+### Immediate Fixes Required
+
+#### Fix 1: Value Type Normalization (UIBuilder.java:496)
+```java
+// BEFORE: return bm.getIntValue();  // Returns primitive int
+// AFTER:  return Integer.valueOf(bm.getIntValue());  // Returns Integer wrapper
+```
+
+#### Fix 2: Pattern Replay Without Fake Buffer (UIBuilder.java:361)
+```java
+// BEFORE: update(typeModel, buffer);  // Recursive with fake buffer
+// AFTER:  Direct object manipulation without buffer recursion
+PTObject ptObject = getPTObject(objectId);
+if (ptObject != null) {
+    // Direct updates instead of buffer-based recursion
+    for (ModelValuePair pair : pattern) {
+        if (pair.getModel() != typeCommand) {
+            ptObject.updateDirect(pair.getModel(), pair.getValue());
+        }
+    }
+}
+```
+
+#### Fix 3: Object Existence Validation (Before UIBuilder.java:355)
+```java
+// Validate all objects exist before replay
+for (ModelValuePair pair : pattern) {
+    if (isTypeCommand(pair.getModel()) && pair.getValue() instanceof Number) {
+        int objectId = ((Number) pair.getValue()).intValue();
+        if (getPTObject(objectId) == null) {
+            log.warning("MISMATCH_FIX: Object " + objectId + " missing, deferring pattern " + refId);
+            return; // Skip replay until object exists
+        }
+    }
+}
+```
+
+### Testing Strategy for Fixes
+
+#### Test 1: Value Type Consistency
+```java
+// Verify server Integer(20) matches client Integer(20)
+// Check pattern.equals() works across server-client boundary
+```
+
+#### Test 2: Pattern Replay Validation
+```java
+// Verify pattern replay doesn't corrupt buffer state
+// Check object access patterns match stored pattern content
+```
+
+#### Test 3: Object Lifecycle Synchronization
+```java
+// Ensure objects exist before pattern replay
+// Validate no premature pattern processing
+```
+
+### Debug References for Future Investigation
+
+**Key Log Messages:**
+- `"Recorded pattern ID X with Y entries"` - Client pattern storage success
+- `"🎯 FOUND: Pattern X retrieved successfully"` - Pattern lookup success
+- `"PTObject #X not found"` - Object lifecycle failure
+- `"Cannot read properties of null (reading 'De')"` - Pattern replay corruption
+
+**Critical Code Locations:**
+- `ModelValueDictionary.java:108` - Server pattern normalization
+- `WebSocket.java:1790` - Server pattern transmission
+- `UIBuilder.java:313` - Client value extraction
+- `UIBuilder.java:361` - Pattern replay (problem area)
+- `UIBuilder.java:375` - Object lookup (failure point)
+
+**Next Investigation Points:**
+1. Why does pattern replay access objects not in the pattern?
+2. How does buffer corruption affect subsequent object creation?
+3. Can we eliminate fake buffer usage in pattern replay?
+
+This analysis provides the foundation for systematic fixes targeting the actual root causes rather than symptoms.

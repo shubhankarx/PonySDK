@@ -335,9 +335,10 @@ public class UIBuilder {
             } else if (ServerToClientModel.DICTIONARY_REFERENCE == model) {
                 // Reference resolution must be handled directly
                 final int refId = binaryModel.getIntValue();
-                log.fine("Processing dictionary reference: " + refId);
+                log.info("Processing dictionary reference: " + refId);
                 final List<ModelValuePair> pattern = clientTracker.getPattern(refId);
                 if (pattern != null) {
+                    log.info("🎯 FOUND: Pattern " + refId + " retrieved successfully from client dictionary with " + pattern.size() + " entries");
                     // First extract the TYPE_* command if present, as this dictates which object receives updates
                     int objectId = -1;
                     ServerToClientModel typeCommand = null;
@@ -353,6 +354,12 @@ public class UIBuilder {
                     
                     // If we found a TYPE command, apply all instructions in the correct context
                     if (typeCommand != null && objectId != -1) {
+                        // NEW: Validate object exists before pattern replay to prevent null pointer exceptions
+                        PTObject ptObject = getPTObject(objectId);
+                        if (ptObject == null) {
+                            log.warning("REPLAY_FIX: Object " + objectId + " missing, deferring pattern " + refId);
+                            return;
+                        }
                         // First create a new TYPE command manually to set context
                         BinaryModel typeModel = createBinaryModel(typeCommand, objectId);
                         
@@ -407,6 +414,7 @@ public class UIBuilder {
                                 }
                             }
                         }
+                        log.info("✅ SUCCESS: Pattern " + refId + " applied successfully with " + pattern.size() + " commands");
                     } 
                     // No TYPE command found, just process each command in sequence
                     else {
@@ -421,6 +429,7 @@ public class UIBuilder {
                             BinaryModel cmdModel = createBinaryModel(pair.getModel(), pair.getValue());
                             update(cmdModel, buffer);
                         }
+                        log.info("✅ SUCCESS: Pattern " + refId + " applied successfully (no TYPE command) with " + pattern.size() + " commands");
                     }
                 } else {
                     log.warning("Dictionary pattern not found: " + refId);
@@ -429,7 +438,7 @@ public class UIBuilder {
                 return;
             } else if (ServerToClientModel.DICTIONARY_PATTERN_END == model) {
                 // This should be handled as part of DICTIONARY_PATTERN_START processing
-                log.fine("Processing dictionary pattern end");
+                log.info("Processing dictionary pattern end");
                 return;
             } else {
                 log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
@@ -490,7 +499,8 @@ public class UIBuilder {
             case BYTE:
             case SHORT:
             case INTEGER:
-                return bm.getIntValue();
+                // return bm.getIntValue(); // OLD: Returns primitive int - causes pattern matching failures
+                return Integer.valueOf(bm.getIntValue()); // NEW: Return Integer wrapper for server consistency
             case LONG:
                 return bm.getLongValue();
             case FLOAT:

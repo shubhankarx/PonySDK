@@ -35,8 +35,13 @@ public class ClientModelTracker {
         }
     }
     
+    // STACK_OVERFLOW_FIX_2024_SHUB: Prevent infinite pattern request loops
+    private static final int MAX_REQUESTS_PER_PATTERN = 3;
+    private static final boolean ENABLE_REQUEST_LIMITING = true;
+
     private final Map<Integer, List<ModelValuePair>> idToPattern = new ConcurrentHashMap<>();
     private final Map<String, Object> valueMap = new ConcurrentHashMap<>();
+    private final Map<Integer, Integer> requestCounts = new ConcurrentHashMap<>();
 
     /**
      * Record a pattern sent by the server under given ID.
@@ -49,7 +54,7 @@ public class ClientModelTracker {
         
         List<ModelValuePair> patternCopy = new ArrayList<>(pattern);
         idToPattern.put(id, patternCopy);
-        log.fine("Recorded pattern ID " + id + " with " + patternCopy.size() + " entries");
+        log.info("Recorded pattern ID " + id + " with " + patternCopy.size() + " entries");
     }
 
     /**
@@ -57,7 +62,15 @@ public class ClientModelTracker {
      */
     public List<ModelValuePair> getPattern(final int id) {
         List<ModelValuePair> pattern = idToPattern.get(id);
-        if (pattern == null) {
+        if (pattern == null && ENABLE_REQUEST_LIMITING) {
+            int count = requestCounts.getOrDefault(id, 0);
+            if (count < MAX_REQUESTS_PER_PATTERN) {
+                requestCounts.put(id, count + 1);
+                log.warning("Pattern not found for ID: " + id + " (attempt " + (count + 1) + ")");
+            } else {
+                log.severe("STACK_OVERFLOW_FIX_2024_SHUB: Blocked excessive requests for pattern ID: " + id);
+            }
+        } else if (pattern == null) {
             log.warning("Pattern not found for ID: " + id);
         }
         return pattern;
@@ -83,6 +96,9 @@ public class ClientModelTracker {
     public void clear() {
         idToPattern.clear();
         valueMap.clear();
+        if (ENABLE_REQUEST_LIMITING) {
+            requestCounts.clear();
+        }
         log.info("Dictionary cleared");
     }
 }   

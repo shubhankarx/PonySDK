@@ -162,6 +162,7 @@ public class UISampleEntryPoint3 implements EntryPoint {
         final PButton largeTestButton = Element.newPButton("Run Large Widget Test (Full Dashboard)");
         final PButton identicalTestButton = Element.newPButton("🔄 Test IDENTICAL Patterns (Dictionary Test)");
         final PButton cyclicTestButton = Element.newPButton("🔁 Test CYCLIC Patterns (Dictionary Hits)");
+        final PButton ultraSimpleButton = Element.newPButton("⚡ ULTRA SIMPLE Test (Single Label)");
         final PButton clearButton = Element.newPButton("Clear All Widgets");
         
         controlPanel.add(smallTestButton);
@@ -169,6 +170,7 @@ public class UISampleEntryPoint3 implements EntryPoint {
         controlPanel.add(largeTestButton);
         controlPanel.add(identicalTestButton);
         controlPanel.add(cyclicTestButton);
+        controlPanel.add(ultraSimpleButton);
         controlPanel.add(clearButton);
         
         mainPanel.add(controlPanel);
@@ -230,6 +232,7 @@ public class UISampleEntryPoint3 implements EntryPoint {
         largeTestButton.addClickHandler(e -> runLargeWidgetTest(resultsPanel));
         identicalTestButton.addClickHandler(e -> runIdenticalPatternTest(resultsPanel));
         cyclicTestButton.addClickHandler(e -> runCyclicPatternTest(resultsPanel));
+        ultraSimpleButton.addClickHandler(e -> runUltraSimpleTest(resultsPanel));
         clearButton.addClickHandler(e -> {
             resultsPanel.clear();
             updateCounter.set(0);
@@ -566,6 +569,50 @@ public class UISampleEntryPoint3 implements EntryPoint {
         
         // Start the cyclic updates
         PScheduler.schedule(UIContext.get(), cyclicUpdate, Duration.ofMillis(100));
+    }
+
+    /**
+     * ULTRA SIMPLE Test: Absolute minimal dictionary test
+     * Single label, single property, same value repeated
+     * This is the SIMPLEST possible case to test dictionary compression
+     */
+    private void runUltraSimpleTest(final PVerticalPanel resultsPanel) {
+        final PLabel testLabel = Element.newPLabel("=== ⚡ ULTRA SIMPLE Dictionary Test ===");
+        testLabel.addStyleName("test-section-header");
+        resultsPanel.add(testLabel);
+
+        final PLabel instructionLabel = Element.newPLabel("Single label, same text 5 times. Pattern should be created on 3rd occurrence.");
+        resultsPanel.add(instructionLabel);
+
+        // Create ONE simple label
+        final PLabel simpleLabel = Element.newPLabel("Hello World");
+        resultsPanel.add(simpleLabel);
+
+        final AtomicInteger simpleCounter = new AtomicInteger(0);
+
+        final Runnable ultraSimpleUpdate = new Runnable() {
+            @Override
+            public void run() {
+                final int count = simpleCounter.incrementAndGet();
+
+                // FIXED: Cycle through different texts, then repeat to create dictionary patterns
+                final String[] texts = {"Text A", "Text B", "Text C"};
+                final String currentText = texts[(count - 1) % 3];
+                simpleLabel.setText(currentText);
+
+                System.out.println("⚡ ULTRA SIMPLE #" + count + " - Set text to '" + currentText + "' (pattern expected on 4th+ occurrence)");
+
+                if (count < 9) { // 3 complete cycles = dictionary compression on 4th+ occurrence
+                    PScheduler.schedule(UIContext.get(), this, Duration.ofMillis(1000));
+                } else {
+                    System.out.println("✅ Ultra simple test complete: " + count + " updates, 3 complete cycles");
+                    System.out.println("   Dictionary should show pattern creation and reuse!");
+                }
+            }
+        };
+
+        // Start with first update
+        PScheduler.schedule(UIContext.get(), ultraSimpleUpdate, Duration.ofMillis(500));
     }
 
 }
