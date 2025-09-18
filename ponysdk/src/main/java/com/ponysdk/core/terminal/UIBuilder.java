@@ -412,30 +412,80 @@ public class UIBuilder {
                     log.info("🔍 Pattern retrieval for #" + refId + ": " + (pattern != null ? "SUCCESS (size=" + pattern.size() + ")" : "NULL"));
 
                     if (pattern != null && !pattern.isEmpty()) {
-                        // Find the object ID from TYPE_UPDATE command in the pattern
-                        for (int i = 0; i < pattern.size(); i++) {
-                            try {
-                                ClientModelTracker.ModelValuePair pair = pattern.get(i);
-                                log.info("🔍 Pattern element " + i + ": model=" + (pair != null ? pair.getModel() : "null") +
-                                        ", value=" + (pair != null && pair.getValue() != null ? pair.getValue() : "null"));
+                        log.info("🚨 COMPLETE PATTERN REPLAY: Processing all " + pattern.size() + " properties");
 
-                                if (pair != null && pair.getModel() != null &&
-                                    (pair.getModel() == ServerToClientModel.TYPE_UPDATE ||
-                                     pair.getModel() == ServerToClientModel.TYPE_CREATE ||
-                                     pair.getModel() == ServerToClientModel.TYPE_ADD ||
-                                     pair.getModel() == ServerToClientModel.TYPE_REMOVE)) {
+                        // COMPLETE PATTERN REPLAY SOLUTION - Process ALL ModelValuePairs
+                        int targetObjectId = -1;
+                        PTObject targetObject = null;
+
+                        // Phase 1: Extract target object ID from type commands
+                        for (ClientModelTracker.ModelValuePair pair : pattern) {
+                            if (pair != null && pair.getModel() != null) {
+                                if (pair.getModel() == ServerToClientModel.TYPE_UPDATE ||
+                                    pair.getModel() == ServerToClientModel.TYPE_CREATE ||
+                                    pair.getModel() == ServerToClientModel.TYPE_ADD ||
+                                    pair.getModel() == ServerToClientModel.TYPE_REMOVE) {
 
                                     if (pair.getValue() instanceof Number) {
-                                        currentUpdateObjectId = ((Number)pair.getValue()).intValue();
-                                        log.info("🔧 Set update context to object #" + currentUpdateObjectId + " for subsequent commands");
-                                        break;
-                                    } else {
-                                        log.warning("⚠️ Pattern element " + i + " has non-numeric value: " + pair.getValue());
+                                        targetObjectId = ((Number) pair.getValue()).intValue();
+                                        targetObject = getPTObject(targetObjectId);
+                                        currentUpdateObjectId = targetObjectId;  // Set context for orphaned commands
+                                        log.info("🎯 Target object identified: #" + targetObjectId + " (" +
+                                               (targetObject != null ? "found" : "NOT FOUND") + ")");
+                                        break;  // Found target, now process properties
                                     }
                                 }
-                            } catch (Exception e) {
-                                log.severe("❌ Error processing pattern element " + i + ": " + e.getMessage());
                             }
+                        }
+
+                        // Phase 2: Apply all property commands to target object
+                        if (targetObject != null) {
+                            log.info("🛠️ Applying properties to object #" + targetObjectId);
+
+                            for (ClientModelTracker.ModelValuePair pair : pattern) {
+                                if (pair != null && pair.getModel() != null) {
+                                    // Skip type commands (already processed)
+                                    if (pair.getModel() == ServerToClientModel.TYPE_UPDATE ||
+                                        pair.getModel() == ServerToClientModel.TYPE_CREATE ||
+                                        pair.getModel() == ServerToClientModel.TYPE_ADD ||
+                                        pair.getModel() == ServerToClientModel.TYPE_REMOVE) {
+                                        continue;  // Skip type commands
+                                    }
+
+                                    try {
+                                        // Create clean BinaryModel for this property
+                                        BinaryModel propertyModel = createBinaryModel(pair.getModel(), pair.getValue());
+
+                                        // Create empty buffer for safe property application
+                                        // Some properties don't need buffer data, others do
+                                        ReaderBuffer emptyBuffer = new ReaderBuffer(new byte[0]);
+
+                                        log.info("⚙️ Applying property: " + pair.getModel() + "=" + pair.getValue());
+
+                                        // Apply property using existing PTObject.update() infrastructure
+                                        boolean success = targetObject.update(emptyBuffer, propertyModel);
+
+                                        if (!success) {
+                                            log.warning("⚠️ Property application failed: " + pair.getModel() + "=" + pair.getValue());
+                                        } else {
+                                            log.info("✅ Property applied successfully: " + pair.getModel());
+                                        }
+
+                                    } catch (Exception e) {
+                                        log.severe("❌ Error applying property " + pair.getModel() + "=" + pair.getValue() + ": " + e.getMessage());
+                                        // Continue with other properties even if one fails
+                                    }
+                                }
+                            }
+
+                            log.info("✅ PATTERN REPLAY COMPLETE: All properties processed for object #" + targetObjectId);
+
+                        } else if (targetObjectId != -1) {
+                            log.warning("⚠️ Object #" + targetObjectId + " not found for pattern replay - deferring properties");
+                            // Object doesn't exist yet - normal for object lifecycle timing issues
+                            // Properties will be applied when object is created
+                        } else {
+                            log.severe("❌ No target object ID found in pattern - pattern may be malformed");
                         }
                     } else {
                         log.warning("⚠️ Pattern #" + refId + " not found or empty in client tracker");

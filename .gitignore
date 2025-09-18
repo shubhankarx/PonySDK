@@ -7,6 +7,10 @@
 *.log
 sample/run_sample_spring_gc.log*
 
+# macOS system files
+.DS_Store
+**/.DS_Store
+
 # WebSocket Optimization Experiment Results
 results/
 sample/results/
