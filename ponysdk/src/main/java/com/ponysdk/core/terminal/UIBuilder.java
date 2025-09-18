@@ -458,7 +458,7 @@ public class UIBuilder {
 
                                         // Create empty buffer for safe property application
                                         // Some properties don't need buffer data, others do
-                                        ReaderBuffer emptyBuffer = new ReaderBuffer(new byte[0]);
+                                        ReaderBuffer emptyBuffer = new ReaderBuffer();
 
                                         log.info("⚙️ Applying property: " + pair.getModel() + "=" + pair.getValue());
 
