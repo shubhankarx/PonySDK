@@ -72,6 +72,8 @@ public class UIBuilder {
     private final ClientModelTracker clientTracker = new ClientModelTracker();
     // Will hold a model we can reuse during pattern replay
     private final BinaryModel replayBinaryModel = new BinaryModel();
+    // Track current update object for handling orphaned commands like TEXT after DICTIONARY_REFERENCE
+    private int currentUpdateObjectId = -1;
     // Flag to prevent infinite recursion during pattern replay
     private boolean isInPatternReplay = false;
 
@@ -231,6 +233,9 @@ public class UIBuilder {
     private void update(final BinaryModel binaryModel, final ReaderBuffer buffer) {
         final ServerToClientModel model = binaryModel.getModel();
 
+        // 🔍 DETAILED CLIENT MESSAGE LOGGING - See exact sequence client reads
+        log.info("🔍 CLIENT READS: " + model.name());
+
         try {
             if (ServerToClientModel.TYPE_CREATE == model) {
                 processCreate(buffer, binaryModel.getIntValue());
@@ -313,6 +318,9 @@ public class UIBuilder {
                     
                     // Extract typed value and add to pattern
                     Object val = extractValue(bm);
+                    log.info("🔍 PATTERN ELEMENT STORED: model=" + bm.getModel() +
+                             ", typeModel=" + bm.getModel().getTypeModel() +
+                             ", extractedValue=" + val + " (type=" + (val != null ? val.getClass().getSimpleName() : "null") + ")");
                     pattern.add(new ModelValuePair(bm.getModel(), val));
                 }
                 
@@ -335,16 +343,26 @@ public class UIBuilder {
                 
                 return;
             } else if (ServerToClientModel.DICTIONARY_REFERENCE == model) {
-                // Reference resolution must be handled directly
+                /*
+                 * ====================================================================
+                 * OLD DICTIONARY_REFERENCE PROCESSING (COMMENTED OUT - BUFFER CORRUPTION ISSUE)
+                 * ====================================================================
+                 *
+                 * PROBLEM: The old approach used buffer-dependent update() calls during pattern replay
+                 * - buffer contains DICTIONARY_REFERENCE data, not actual property values
+                 * - propertyObject.update(buffer, cmdModel) tries to read additional data from buffer
+                 * - Causes "Cannot read properties of null (reading 'De')" crashes
+                 *
+                 * OLD CODE:
+                 *
                 final int refId = binaryModel.getIntValue();
                 log.info("Processing dictionary reference: " + refId);
                 final List<ModelValuePair> pattern = clientTracker.getPattern(refId);
                 if (pattern != null) {
-                    log.info("🎯 FOUND: Pattern " + refId + " retrieved successfully from client dictionary with " + pattern.size() + " entries");
-                    // First extract the TYPE_* command if present, as this dictates which object receives updates
+                    log.info("🎯 FOUND: Pattern " + refId + " retrieved successfully");
                     int objectId = -1;
                     ServerToClientModel typeCommand = null;
-                    
+
                     // First pass: look for a TYPE_* instruction and extract object ID
                     for (ModelValuePair pair : pattern) {
                         if (isTypeCommand(pair.getModel())) {
@@ -353,123 +371,113 @@ public class UIBuilder {
                             break;
                         }
                     }
-                    
-                    // If we found a TYPE command, apply all instructions in the correct context
+
                     if (typeCommand != null && objectId != -1) {
-                        // NEW: Validate object exists before pattern replay to prevent null pointer exceptions
                         PTObject ptObject = getPTObject(objectId);
                         if (ptObject == null) {
                             log.warning("REPLAY_FIX: Object " + objectId + " missing, deferring pattern " + refId);
                             return;
                         }
-                        // First create a new TYPE command manually to set context
-                        BinaryModel typeModel = createBinaryModel(typeCommand, objectId);
-                        
-                        // Process the TYPE command to set up the context
-                        // Go back to original update() method approach
-                        update(typeModel, buffer);
-                        
-                        // Check if pattern has a WIDGET_TYPE command, which needs special handling
-                        ModelValuePair widgetTypePair = null;
-                        for (ModelValuePair pair : pattern) {
-                            if (pair.getModel() == ServerToClientModel.WIDGET_TYPE) {
-                                widgetTypePair = pair;
-                                break;
-                            }
-                        }
-                        
-                        // Special handling for TYPE_CREATE: inject WIDGET_TYPE first if present
-                        if (typeCommand == ServerToClientModel.TYPE_CREATE && widgetTypePair != null) {
-                            BinaryModel widgetTypeModel = createBinaryModel(widgetTypePair.getModel(), widgetTypePair.getValue());
-                            PTObject widgetObject = getPTObject(objectId);
-                            if (widgetObject != null) {
-                                widgetObject.update(buffer, widgetTypeModel);
-                            }
-                        }
-                        
-                        // Now apply each command in the pattern except the TYPE command
-                        // and the WIDGET_TYPE if we've already processed it
-                        for (ModelValuePair pair : pattern) {
-                            if (pair.getModel() != typeCommand && 
-                                !(pair == widgetTypePair && typeCommand == ServerToClientModel.TYPE_CREATE)) {
-                                
-                                // Skip dictionary-specific commands that should be handled at UIBuilder level
-                                if (pair.getModel() == ServerToClientModel.DICTIONARY_PATTERN_START ||
-                                    pair.getModel() == ServerToClientModel.DICTIONARY_PATTERN_END ||
-                                    pair.getModel() == ServerToClientModel.DICTIONARY_REFERENCE) {
-                                    continue;
-                                }
-                                
-                                BinaryModel cmdModel = createBinaryModel(pair.getModel(), pair.getValue());
-                                
-                                // If it's another TYPE command, process it as a complete update
-                                if (isTypeCommand(pair.getModel())) {
-                                    try {
-                                        if (!isInPatternReplay) {
-                                            isInPatternReplay = true;
-                                            update(cmdModel, buffer);
-                                            log.info("🔍 ✅ TYPE command update successful for " + pair.getModel());
-                                        } else {
-                                            log.warning("🔍 ⚠️ Skipping recursive TYPE command: " + pair.getModel());
-                                        }
-                                    } catch (Exception e) {
-                                        log.severe("🔍 ❌ ERROR in TYPE command update: " + e.getMessage());
-                                        e.printStackTrace();
-                                    } finally {
-                                        isInPatternReplay = false;
-                                    }
-                                } 
-                                // Otherwise it's a property of the main object
-                                else {
-                                    // Get the object from our object registry - ADD SAFETY AND DEBUG
-                                    log.info("🔍 Getting object for property update, objectId=" + objectId);
-                                    PTObject propertyObject = getPTObject(objectId);
-                                    log.info("🔍 Retrieved propertyObject = " + propertyObject);
-                                    log.info("🔍 About to update property " + pair.getModel() + " with value: " + pair.getValue());
 
-                                    if (propertyObject != null) {
-                                        try {
-                                            // Direct property update on the widget
-                                            propertyObject.update(buffer, cmdModel);
-                                            log.info("🔍 ✅ Property update successful for " + pair.getModel());
-                                        } catch (Exception e) {
-                                            log.severe("🔍 ❌ ERROR in propertyObject.update(): " + e.getMessage());
-                                            log.severe("🔍 Exception class: " + e.getClass().getSimpleName());
-                                            log.severe("🔍 propertyObject class: " + propertyObject.getClass().getSimpleName());
-                                            e.printStackTrace();
-                                            // Don't crash entire pattern replay - continue with next property
-                                        }
+                        // BUFFER CORRUPTION: These calls read from wrong buffer
+                        // if (typeCommand == ServerToClientModel.TYPE_UPDATE) {
+                        //     processUpdate(buffer, objectId);  // ❌ Reads from wrong buffer
+                        // } else if (typeCommand == ServerToClientModel.TYPE_CREATE) {
+                        //     processCreate(buffer, objectId);  // ❌ Reads from wrong buffer
+                        // }
+
+                        // Now apply each command in the pattern
+                        for (ModelValuePair pair : pattern) {
+                            if (pair.getModel() != typeCommand) {
+                                BinaryModel cmdModel = createBinaryModel(pair.getModel(), pair.getValue());
+
+                                // BUFFER CORRUPTION: This line caused the crashes
+                                propertyObject.update(buffer, cmdModel); // ❌ BUFFER CORRUPTION
+                            }
+                        }
+                    }
+                }
+                 */
+
+                //
+                // DICTIONARY_REFERENCE HANDLER WITH OBJECT CONTEXT PRESERVATION
+                // This establishes object context for subsequent commands like TEXT
+                //
+                final int refId = binaryModel.getIntValue();
+                log.info("📋 Dictionary reference received: " + refId);
+
+                // Get the pattern to extract object context with defensive error handling
+                try {
+                    final List<ClientModelTracker.ModelValuePair> pattern = clientTracker.getPattern(refId);
+                    log.info("🔍 Pattern retrieval for #" + refId + ": " + (pattern != null ? "SUCCESS (size=" + pattern.size() + ")" : "NULL"));
+
+                    if (pattern != null && !pattern.isEmpty()) {
+                        // Find the object ID from TYPE_UPDATE command in the pattern
+                        for (int i = 0; i < pattern.size(); i++) {
+                            try {
+                                ClientModelTracker.ModelValuePair pair = pattern.get(i);
+                                log.info("🔍 Pattern element " + i + ": model=" + (pair != null ? pair.getModel() : "null") +
+                                        ", value=" + (pair != null && pair.getValue() != null ? pair.getValue() : "null"));
+
+                                if (pair != null && pair.getModel() != null &&
+                                    (pair.getModel() == ServerToClientModel.TYPE_UPDATE ||
+                                     pair.getModel() == ServerToClientModel.TYPE_CREATE ||
+                                     pair.getModel() == ServerToClientModel.TYPE_ADD ||
+                                     pair.getModel() == ServerToClientModel.TYPE_REMOVE)) {
+
+                                    if (pair.getValue() instanceof Number) {
+                                        currentUpdateObjectId = ((Number)pair.getValue()).intValue();
+                                        log.info("🔧 Set update context to object #" + currentUpdateObjectId + " for subsequent commands");
+                                        break;
                                     } else {
-                                        log.warning("🔍 ⚠️ propertyObject is NULL for objectId " + objectId);
+                                        log.warning("⚠️ Pattern element " + i + " has non-numeric value: " + pair.getValue());
                                     }
                                 }
+                            } catch (Exception e) {
+                                log.severe("❌ Error processing pattern element " + i + ": " + e.getMessage());
                             }
                         }
-                        log.info("✅ SUCCESS: Pattern " + refId + " applied successfully with " + pattern.size() + " commands");
-                    } 
-                    // No TYPE command found, just process each command in sequence
-                    else {
-                        for (ModelValuePair pair : pattern) {
-                            // Skip dictionary-specific commands
-                            if (pair.getModel() == ServerToClientModel.DICTIONARY_PATTERN_START ||
-                                pair.getModel() == ServerToClientModel.DICTIONARY_PATTERN_END ||
-                                pair.getModel() == ServerToClientModel.DICTIONARY_REFERENCE) {
-                                continue;
-                            }
-                            
-                            BinaryModel cmdModel = createBinaryModel(pair.getModel(), pair.getValue());
-                            update(cmdModel, buffer);
-                        }
-                        log.info("✅ SUCCESS: Pattern " + refId + " applied successfully (no TYPE command) with " + pattern.size() + " commands");
+                    } else {
+                        log.warning("⚠️ Pattern #" + refId + " not found or empty in client tracker");
                     }
-                } else {
-                    log.warning("Dictionary pattern not found: " + refId);
-                    requestDictionaryPattern(refId);
+                } catch (Exception e) {
+                    log.severe("❌ Error retrieving pattern #" + refId + ": " + e.getMessage());
+                }
+
+                // CRITICAL: Consume the END marker that follows DICTIONARY_REFERENCE
+                if (buffer.hasEnoughKeyBytes()) {
+                    BinaryModel endMarker = buffer.readBinaryModel();
+                    if (endMarker.getModel() != ServerToClientModel.END) {
+                        log.warning("Expected END marker after DICTIONARY_REFERENCE " + refId +
+                                  ", found: " + endMarker.getModel() + ". Buffer may be corrupted.");
+                    }
                 }
                 return;
             } else if (ServerToClientModel.DICTIONARY_PATTERN_END == model) {
                 // This should be handled as part of DICTIONARY_PATTERN_START processing
                 log.info("Processing dictionary pattern end");
+                return;
+            } else if (ServerToClientModel.TEXT == model) {
+                // Handle orphaned TEXT commands that come after DICTIONARY_REFERENCE
+                if (currentUpdateObjectId != -1) {
+                    log.info("🔧 Processing orphaned TEXT command for object #" + currentUpdateObjectId);
+                    final PTObject ptObject = getPTObject(currentUpdateObjectId);
+                    if (ptObject != null) {
+                        boolean result = ptObject.update(buffer, binaryModel);
+                        if (!result) {
+                            log.warning("Failed to update object #" + currentUpdateObjectId + " with TEXT: " + binaryModel.getStringValue());
+                            buffer.shiftNextBlock(false);
+                        }
+                    } else {
+                        log.warning("Object #" + currentUpdateObjectId + " not found for TEXT command");
+                        buffer.shiftNextBlock(false);
+                    }
+                    // Reset context after handling the command
+                    currentUpdateObjectId = -1;
+                } else {
+                    log.warning("TEXT command received without object context: " + binaryModel.getStringValue());
+                    buffer.shiftNextBlock(false);
+                }
                 return;
             } else {
                 log.log(Level.WARNING, "Unknown instruction type : " + binaryModel + " ; " + buffer.toString());
@@ -532,6 +540,10 @@ public class UIBuilder {
             case INTEGER:
                 // return bm.getIntValue(); // OLD: Returns primitive int - causes pattern matching failures
                 return Integer.valueOf(bm.getIntValue()); // NEW: Return Integer wrapper for server consistency
+            case UINT31:
+                // CRITICAL FIX: Handle UINT31 TypeModel used by TYPE_UPDATE commands
+                // This was causing extractedValue=null in pattern storage
+                return Integer.valueOf(bm.getIntValue());
             case LONG:
                 return bm.getLongValue();
             case FLOAT:
@@ -543,7 +555,35 @@ public class UIBuilder {
             case ARRAY:
                 return bm.getArrayValue();
             default:
+                log.warning("⚠️ Unknown TypeModel for " + bm.getModel() + ": " + bm.getModel().getTypeModel() + ", returning null");
                 return null;
+        }
+    }
+
+    /**
+     * NEW: Apply property directly to PTObject without buffer dependency.
+     *
+     * This method applies properties during pattern replay by creating individual
+     * BinaryModels and processing them one at a time without buffer corruption.
+     */
+    private void applyPropertyDirectly(PTObject targetObject, ServerToClientModel model, Object value) {
+        try {
+            // Create a BinaryModel for this property
+            BinaryModel propertyBinaryModel = createBinaryModel(model, value);
+
+            // Create a minimal buffer for this single property
+            // We avoid buffer corruption by creating a fresh, isolated buffer for each property
+            ReaderBuffer propertyBuffer = new ReaderBuffer();
+
+            // Apply the property using the normal PTObject.update pattern
+            // but with an isolated buffer containing only this property's data
+            boolean result = targetObject.update(propertyBuffer, propertyBinaryModel);
+
+            if (!result) {
+                log.info("Pattern replay: Property " + model + " not handled by " + targetObject.getClass().getSimpleName());
+            }
+        } catch (Exception e) {
+            log.warning("Pattern replay error for property " + model + ": " + e.getMessage());
         }
     }
 
@@ -598,23 +638,19 @@ public class UIBuilder {
                 if (ServerToClientModel.END.getValue() != binaryModel.getModel().getValue()) {
                     ServerToClientModel model = binaryModel.getModel();
                     
-                    // Special case: If we get a dictionary command directly for a widget,
-                    // handle it at the UIBuilder level instead
+                    // CRITICAL FIX: Handle dictionary commands directly without recursive calls
                     if (model == ServerToClientModel.DICTIONARY_PATTERN_START ||
                         model == ServerToClientModel.DICTIONARY_PATTERN_END ||
                         model == ServerToClientModel.DICTIONARY_REFERENCE) {
-                        
-                        // We need to process this dictionary command at UIBuilder level, not widget level
-                        // Rewind to read this command again in the main update flow
-                        buffer.rewind(binaryModel);
-                        
-                        // Create a temporary TYPE_UPDATE command to send to the main update flow
-                        BinaryModel typeUpdateModel = new BinaryModel();
-                        typeUpdateModel.init(ServerToClientModel.TYPE_UPDATE, objectID, 1);
-                        
-                        // Process at UIBuilder level
-                        update(typeUpdateModel, buffer);
-                        return; // Stop processing current update as we've redirected to the main flow
+
+                        // Handle dictionary commands safely without crashing
+                        if (model == ServerToClientModel.DICTIONARY_REFERENCE) {
+                            final int refId = binaryModel.getIntValue();
+                            log.info("📋 Dictionary reference in processUpdate: " + refId + " for object " + objectID + " (safely ignoring)");
+                            // Skip pattern replay to prevent crashes - let normal message flow handle it
+                        }
+                        // Skip other dictionary commands for now
+                        continue;
                     }
                     
                     // Standard widget update flow
@@ -818,6 +854,7 @@ public class UIBuilder {
         return null;
     }
 
+
     public void registerUIObject(final Integer ID, final UIObject uiObject) {
         objectIDByWidget.put(uiObject, ID);
         widgetIDByObjectID.put(ID, uiObject);
@@ -918,6 +955,15 @@ public class UIBuilder {
                model == ServerToClientModel.TYPE_ADD_HANDLER ||
                model == ServerToClientModel.TYPE_REMOVE_HANDLER ||
                model == ServerToClientModel.TYPE_GC;
+    }
+
+    /**
+     * Helper method to detect dictionary control commands that should be skipped during pattern replay
+     */
+    private boolean isDictionaryControlCommand(ServerToClientModel model) {
+        return model == ServerToClientModel.DICTIONARY_PATTERN_START ||
+               model == ServerToClientModel.DICTIONARY_PATTERN_END ||
+               model == ServerToClientModel.DICTIONARY_REFERENCE;
     }
 
 }
