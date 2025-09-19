@@ -67,7 +67,17 @@ public final class LatencyTracker implements WebSocket.Listener {
     
     // Frame type distribution tracking
     private final ConcurrentHashMap<ServerToClientModel, AtomicLong> frameTypeDistribution = new ConcurrentHashMap<>();
-    
+
+    // TRUE END-TO-END LATENCY TRACKING (Server → Client DOM Ready)
+    private final AtomicLong endToEndCount = new AtomicLong(0);
+    private final AtomicLong totalEndToEndLatencyMillis = new AtomicLong(0);
+    private final AtomicLong minEndToEndLatencyMillis = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong maxEndToEndLatencyMillis = new AtomicLong(Long.MIN_VALUE);
+
+    // Server-side only latency (current measurement - for comparison)
+    private final AtomicLong serverOnlyCount = new AtomicLong(0);
+    private final AtomicLong totalServerOnlyLatencyNanos = new AtomicLong(0);
+
     // Periodic reporting control
     private volatile long lastReportTimeMillis = System.currentTimeMillis();
     private static final long REPORT_INTERVAL_MILLIS = 30000; // 30 seconds
@@ -79,6 +89,28 @@ public final class LatencyTracker implements WebSocket.Listener {
     public void onInterceptMessage(String modelType, Object value) {
         messageInterceptCount.incrementAndGet();
         triggerPeriodicReportIfNeeded();
+    }
+
+    /**
+     * Handle true end-to-end latency measurement from client roundtrip response
+     * Called when client reports TERMINAL_LATENCY back to server
+     */
+    public void onClientRoundtripLatency(long clientLatencyMillis) {
+        endToEndCount.incrementAndGet();
+        totalEndToEndLatencyMillis.addAndGet(clientLatencyMillis);
+
+        // Update min/max bounds
+        long currentMin = minEndToEndLatencyMillis.get();
+        while (clientLatencyMillis < currentMin &&
+               !minEndToEndLatencyMillis.compareAndSet(currentMin, clientLatencyMillis)) {
+            currentMin = minEndToEndLatencyMillis.get();
+        }
+
+        long currentMax = maxEndToEndLatencyMillis.get();
+        while (clientLatencyMillis > currentMax &&
+               !maxEndToEndLatencyMillis.compareAndSet(currentMax, clientLatencyMillis)) {
+            currentMax = maxEndToEndLatencyMillis.get();
+        }
     }
     
     /**
@@ -189,37 +221,41 @@ public final class LatencyTracker implements WebSocket.Listener {
     public void onFrameWriteSuccess() {
         long startNanos = transmissionStartNanos.getAndSet(0);
         if (startNanos == 0) return; // No active transmission
+
+        // Calculate SERVER-SIDE-ONLY latency (NOT true end-to-end)
+        long serverLatencyNanos = System.nanoTime() - startNanos;
+
+        // Track server-side latency separately for comparison
+        serverOnlyCount.incrementAndGet();
+        totalServerOnlyLatencyNanos.addAndGet(serverLatencyNanos);
         
-        // Calculate end-to-end latency
-        long latencyNanos = System.nanoTime() - startNanos;
-        
-        // Store in ring buffer for percentile calculation
+        // Store in ring buffer for percentile calculation (server-side only)
         int bufferIndex = (int)(ringBufferWriteIndex.getAndIncrement() & (RING_BUFFER_SIZE - 1));
-        latencyRingBuffer[bufferIndex] = latencyNanos;
+        latencyRingBuffer[bufferIndex] = serverLatencyNanos;
         dictionaryUsedBuffer[bufferIndex] = currentTransmissionUsedDictionary; // Store dictionary usage
         
         // Track dictionary-specific counters
         if (currentTransmissionUsedDictionary) {
             messagesWithDictionary.incrementAndGet();
-            totalDictionaryLatencyNanos.addAndGet(latencyNanos);
+            totalDictionaryLatencyNanos.addAndGet(serverLatencyNanos);
         } else {
             messagesWithoutDictionary.incrementAndGet();
-            totalNoDictionaryLatencyNanos.addAndGet(latencyNanos);
+            totalNoDictionaryLatencyNanos.addAndGet(serverLatencyNanos);
         }
-        
+
         // Update min/max with CAS loop
-        updateMinLatency(latencyNanos);
-        updateMaxLatency(latencyNanos);
-        
+        updateMinLatency(serverLatencyNanos);
+        updateMaxLatency(serverLatencyNanos);
+
         totalTransmissions.incrementAndGet();
         currentTransmissionBytes.set(0);
-        
+
         // Reset dictionary flag for next transmission
         currentTransmissionUsedDictionary = false;
-        
-        // Alert on high latency
-        if (latencyNanos > 50_000_000L) { // > 50ms
-            log.warn("HIGH LATENCY: {:.2f}ms", latencyNanos / 1_000_000.0);
+
+        // Alert on high latency (server-side only)
+        if (serverLatencyNanos > 50_000_000L) { // > 50ms
+            log.warn("HIGH SERVER LATENCY: {:.2f}ms", serverLatencyNanos / 1_000_000.0);
         }
     }
     
@@ -336,13 +372,32 @@ public final class LatencyTracker implements WebSocket.Listener {
             double avgNoDictLatency = totalNoDictionaryLatencyNanos.get() / 1_000_000.0 / noDictMsgs;
             double improvement = ((avgNoDictLatency - avgDictLatency) / avgNoDictLatency) * 100;
             
+            log.info("=== LATENCY MEASUREMENT COMPARISON ===");
+
+            // Server-side only measurements (current system)
+            double avgServerOnlyMs = serverOnlyCount.get() > 0 ?
+                totalServerOnlyLatencyNanos.get() / 1_000_000.0 / serverOnlyCount.get() : 0;
+            log.info("SERVER-SIDE ONLY: {}ms avg ({} measurements) [Socket Buffer Write Only]",
+                String.format("%.2f", avgServerOnlyMs), serverOnlyCount.get());
+
+            // True end-to-end measurements
+            double avgEndToEndMs = endToEndCount.get() > 0 ?
+                totalEndToEndLatencyMillis.get() / (double) endToEndCount.get() : 0;
+            log.info("TRUE END-TO-END: {}ms avg ({} measurements) [Network + Client DOM Ready]",
+                String.format("%.2f", avgEndToEndMs), endToEndCount.get());
+
+            if (endToEndCount.get() > 0) {
+                log.info("End-to-End Range: min={}ms, max={}ms",
+                    minEndToEndLatencyMillis.get(), maxEndToEndLatencyMillis.get());
+            }
+
             log.info("=== DICTIONARY PERFORMANCE COMPARISON ===");
-            log.info("WITH Dictionary: {}ms avg ({} transmissions)", 
+            log.info("WITH Dictionary: {}ms avg ({} transmissions)",
                 String.format("%.2f", avgDictLatency), dictMsgs);
-            log.info("WITHOUT Dictionary: {}ms avg ({} transmissions)", 
+            log.info("WITHOUT Dictionary: {}ms avg ({} transmissions)",
                 String.format("%.2f", avgNoDictLatency), noDictMsgs);
-            log.info("Performance Impact: {}% {}", 
-                String.format("%.1f", Math.abs(improvement)), 
+            log.info("Performance Impact: {}% {}",
+                String.format("%.1f", Math.abs(improvement)),
                 improvement > 0 ? "IMPROVEMENT" : "OVERHEAD");
             
             // Calculate percentiles for each category

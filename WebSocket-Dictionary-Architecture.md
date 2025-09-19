@@ -721,6 +721,86 @@ Code Location: WebSocket.java:779-819, 2124-2138
 4. Analyze call depth in recursive patterns
 ```
 
+## ⚠️ CRITICAL LATENCY MEASUREMENT DISCOVERY - SEPTEMBER 2025
+
+### What We Actually Measure vs What We Think We Measure
+
+**IMPORTANT DISCOVERY**: The current LatencyTracker system does NOT measure true end-to-end latency.
+
+#### Current System (INCORRECT ASSUMPTION)
+```
+✅ What we REPORT: 0.21ms with dictionary, 1.23ms without
+❌ What we THINK this means: Complete end-to-end user experience latency
+❌ What this ACTUALLY measures: Server processing + socket buffer write ONLY
+```
+
+#### True Complete Latency Flow (WHAT SHOULD BE MEASURED)
+
+**Complete Widget Display Example: Creating PTLabel with "Hello World"**
+
+```java
+// Step 1: SERVER PROCESSING (Currently measured: 0.21ms)
+T0: WebSocket.encode(TYPE_CREATE, objectId=26)     // ← START measurement
+T1: Dictionary lookup and compression
+T2: WebSocket frame preparation
+T3: session.getRemote().sendBytes()                // ← Buffer write
+T4: WriteCallback.writeSuccess()                   // ← CURRENT END (WRONG!)
+
+// Step 2: NETWORK TRANSIT (NOT measured: 1-200ms)
+T5: TCP transmission across network
+T6: Browser WebSocket.onmessage() event
+
+// Step 3: CLIENT PROCESSING (NOT measured: 0.1-5ms)
+T7: UIBuilder.updateMainTerminal()
+T8: processCreate() → PTLabel created in memory
+T9: processUpdate() → setText("Hello World")
+
+// Step 4: DOM RENDERING (NOT measured: 0.1-2ms)
+T10: processAdd() → parentObject.add(ptObject)
+T11: uiObject.insert() → DOM appendChild()         // ← TRUE END (Widget visible)
+```
+
+### Measurement Reality Check
+
+**Current "0.21ms" = T4 - T0** (Server processing + socket buffer write)
+**TRUE End-to-End = T11 - T0** (Complete user-visible widget creation)
+
+**Missing from measurement:**
+- Network transit: 1-200ms (depending on location)
+- Client processing: 0.1-5ms
+- DOM manipulation: 0.1-2ms
+- **TOTAL MISSING: 1.2-207ms**
+
+### Updated LatencyTracker Implementation
+
+The LatencyTracker has been updated to distinguish between:
+1. **Server-Side-Only Latency**: Current measurement (socket buffer write)
+2. **True End-to-End Latency**: Using existing ROUNDTRIP_LATENCY system
+
+```java
+// New metrics in LatencyTracker.java
+private final AtomicLong endToEndCount = new AtomicLong(0);
+private final AtomicLong totalEndToEndLatencyMillis = new AtomicLong(0);
+private final AtomicLong serverOnlyCount = new AtomicLong(0);
+private final AtomicLong totalServerOnlyLatencyNanos = new AtomicLong(0);
+
+// Updated reporting
+log.info("SERVER-SIDE ONLY: {}ms avg [Socket Buffer Write Only]", avgServerOnly);
+log.info("TRUE END-TO-END: {}ms avg [Network + Client DOM Ready]", avgEndToEnd);
+```
+
+### Performance Implications
+
+**Dictionary compression benefits are REAL but understated:**
+- Server-side improvement: 5.9x faster (0.21ms vs 1.23ms)
+- Network efficiency: 50% bandwidth reduction
+- **True end-to-end improvement**: Likely 2-3x when including network benefits
+
+**Why this matters for high-frequency trading:**
+- Sub-millisecond server processing is crucial for market data
+- Network efficiency compounds at scale
+- True latency includes complete user interaction readiness
+
 ## CRITICAL BUFFER CORRUPTION ANALYSIS & SOLUTION ARCHITECTURE
 
 ### Root Cause: Buffer State Corruption During Pattern Replay

@@ -14,20 +14,20 @@ sequenceDiagram
     participant Client as Client Browser<br/>UIBuilder.js
     participant UI as Client UI<br/>DOM Elements
 
-    Note over App,UI: 🚀 NETWORK SEQUENCE: Dictionary Pattern Creation & Transmission
+    Note over App,UI: 🚀 CORRECTED NETWORK SEQUENCE: True End-to-End Latency Measurement
 
-    %% Initial UI Operation
-    App->>+WS: encode(TYPE_UPDATE, objectId=26)
-    Note right of WS: ⏱️ T0 = System.nanoTime()<br/>START: Message Entry
+    %% Initial UI Operation with TRUE timing start
+    App->>+WS: encode(TYPE_CREATE, objectId=26)
+    Note right of WS: ⏱️ T0 = System.nanoTime()<br/>🎯 TRUE START: Message Entry<br/>📊 Start both server-side AND end-to-end timing
 
     %% Stage 1: Message Interception
-    WS->>+LT: onInterceptMessage("TYPE_UPDATE", 26)
+    WS->>+LT: onInterceptMessage("TYPE_CREATE", 26)
     Note right of LT: ⏱️ T1 = System.nanoTime()<br/>📈 messageInterceptCount++
     LT-->>-WS: Latency tracking started
 
     %% Stage 2: Dictionary Processing
     WS->>WS: Add to currentBatch<br/>currentBatch.size() >= 2?
-    WS->>+Dict: recordPattern([TYPE_UPDATE=26])
+    WS->>+Dict: recordPattern([TYPE_CREATE=26])
     Note right of Dict: Pattern frequency analysis<br/>1st occurrence: count=1<br/>2nd occurrence: count=2<br/>3rd occurrence: PROMOTE
 
     alt Pattern Below Threshold (1st-2nd time)
@@ -35,7 +35,7 @@ sequenceDiagram
         WS->>+LT: onDictionaryLookup(MISS)
         Note right of LT: ⏱️ T3 = System.nanoTime()<br/>📈 dictionaryMissCount++
         LT-->>-WS: Miss recorded
-        WS->>+Net: Raw Message: TYPE_UPDATE=26
+        WS->>+Net: Raw Message: TYPE_CREATE=26
         Note over Net: 📤 WebSocket Frame<br/>Size: ~8 bytes
     else Pattern Promotion (3rd time)
         Dict->>Dict: Store pattern with ID=4
@@ -54,7 +54,7 @@ sequenceDiagram
         LT-->>-WS: Encoding complete
 
         WS->>+Net: DICTIONARY_PATTERN_START=4
-        WS->>+Net: TYPE_UPDATE=26
+        WS->>+Net: TYPE_CREATE=26
         WS->>+Net: DICTIONARY_PATTERN_END
         Note over Net: 📤 WebSocket Frames<br/>Pattern Definition<br/>Size: ~12 bytes
     else Pattern Reference (4th+ time)
@@ -71,7 +71,7 @@ sequenceDiagram
         Note over Net: 📤 WebSocket Frame<br/>Compressed Reference<br/>Size: ~4 bytes (50% savings)
     end
 
-    %% Network Transmission with Latency Tracking
+    %% Network Transmission with SERVER-SIDE-ONLY Latency Tracking
     Net->>+LT: onOutgoingPonyFrame()
     Note right of LT: ⏱️ T6 = transmissionStartNanos<br/>📈 frameTypeDistribution++
     LT-->>-Net: Frame tracked
@@ -80,59 +80,90 @@ sequenceDiagram
     Note right of LT: 📈 totalTransmittedBytes += size<br/>📊 currentTransmissionBytes
     LT-->>-Net: Bytes tracked
 
-    Note over Net,Client: 🌐 NETWORK TRANSIT<br/>TCP/WebSocket Protocol<br/>Typical: 1-10ms local, 50-200ms remote
-
-    %% Network Success Callback
+    %% CRITICAL: Server-side measurement ends here (NOT true end-to-end)
     Net->>+LT: onFrameWriteSuccess()
-    Note right of LT: ⏱️ T7 = System.nanoTime()<br/>🧮 END-TO-END LATENCY = T7 - T0<br/>📊 Update ringBuffer[index] = latency<br/>📈 Update percentiles (p50,p95,p99)
-    LT-->>-Net: Complete latency recorded
+    Note right of LT: ⏱️ T7 = System.nanoTime()<br/>🔴 SERVER-SIDE ONLY = T7 - T0<br/>📊 Update serverOnlyLatency = 0.21ms<br/>❌ NOT true end-to-end!
+    LT-->>-Net: Server-side latency recorded
 
-    %% Client Reception and Processing
+    Note over Net,Client: 🌐 NETWORK TRANSIT (NOT MEASURED BY SERVER)<br/>TCP/WebSocket Protocol<br/>⏱️ 1-10ms local, 50-200ms remote<br/>🔴 MISSING FROM CURRENT MEASUREMENT!
+
+    %% Client Reception and Processing (TRUE END-TO-END CONTINUES)
     Net-->>+Client: WebSocket Message Received
-    Note right of Client: 📥 Client Processing Start<br/>⏱️ TC0 = performance.now()
+    Note right of Client: 📥 Client Processing Start<br/>⏱️ TC0 = performance.now()<br/>🟡 Network transit complete
 
     alt Pattern Definition Processing
         Client->>Client: Parse DICTIONARY_PATTERN_START=4
-        Client->>Client: Store pattern: [TYPE_UPDATE=26]
+        Client->>Client: Store pattern: [TYPE_CREATE=26]
         Client->>Client: Parse DICTIONARY_PATTERN_END
         Note right of Client: ✅ Pattern #4 stored in ClientModelTracker<br/>⏱️ TC1 = Pattern storage time
-        Client->>+UI: Process TYPE_UPDATE for object #26
-        UI-->>-Client: Object updated successfully
+
+        %% TRUE UI CREATION AND DOM ATTACHMENT
+        Client->>Client: processCreate() → PTObject created
+        Note right of Client: 🏗️ Widget created in memory<br/>⏱️ TC2 = Object creation time
+
+        Client->>Client: processUpdate() → Set properties
+        Note right of Client: 📝 Widget properties set<br/>⏱️ TC3 = Property update time
+
+        Client->>+UI: processAdd() → parentObject.add(widget)
+        Note right of UI: 🎯 DOM appendChild() called<br/>⏱️ TC4 = DOM manipulation time
+        UI-->>-Client: Widget visible and interactive!
+
+        Note right of Client: 🟢 TRUE END-TO-END COMPLETE<br/>⏱️ TOTAL = TC4 - T0<br/>📊 Widget ready for user interaction
+
     else Pattern Reference Processing
         Client->>Client: Parse DICTIONARY_REFERENCE=4
         Client->>Client: Lookup pattern #4 in ClientModelTracker
         alt Pattern Found
-            Client->>Client: Retrieve: [TYPE_UPDATE=26]
+            Client->>Client: Retrieve: [TYPE_CREATE=26]
             Note right of Client: ✅ Pattern replay successful<br/>⏱️ TC2 = Pattern retrieval time
-            Client->>+UI: Process TYPE_UPDATE for object #26
-            UI-->>-Client: Object updated via pattern replay
+
+            Client->>Client: processCreate() → PTObject created
+            Client->>Client: processUpdate() → Set properties
+            Client->>+UI: processAdd() → DOM appendChild()
+            UI-->>-Client: Widget visible via pattern replay!
+
+            Note right of Client: 🟢 TRUE END-TO-END COMPLETE<br/>⏱️ TOTAL = TC4 - T0<br/>📊 Dictionary pattern → visible widget
+
         else Pattern Missing
             Client->>+Net: DICTIONARY_REQUEST=4
             Note over Client,Net: 🔄 Pattern Recovery Protocol<br/>Request missing pattern definition
             Net-->>+WS: handleDictionaryRequest(4)
             WS->>+Dict: getPattern(4)
-            Dict-->>-WS: return [TYPE_UPDATE=26]
+            Dict-->>-WS: return [TYPE_CREATE=26]
             WS-->>-Net: Send pattern definition
             Net-->>-Client: Pattern definition received
             Client->>Client: Store and process pattern
+            Client->>+UI: processAdd() → DOM appendChild()
+            UI-->>-Client: Widget visible after recovery!
         end
     end
 
-    Note over App,UI: 📊 PERFORMANCE METRICS (Live System Data)
-
-    %% Performance Summary Box
-    rect rgb(240, 248, 255)
-        Note over LT,Client: 🎯 CURRENT SYSTEM PERFORMANCE<br/>📈 Dictionary Hit Rate: 74.9% (128 hits, 43 misses)<br/>⚡ WITH Dictionary: 0.21ms average latency<br/>🐌 WITHOUT Dictionary: 1.23ms average latency<br/>🚀 Performance Improvement: 83.2% (5.9x faster)<br/>📊 Percentiles (Dictionary): p50=0.14ms, p95=0.59ms, p99=0.75ms<br/>📊 Percentiles (No Dictionary): p50=0.27ms, p95=2.75ms, p99=9.61ms<br/>📤 Network Savings: DICTIONARY_REFERENCE (4 bytes) vs Raw Message (8+ bytes)
+    %% Optional: Roundtrip latency measurement for validation
+    opt Periodic End-to-End Validation
+        Client->>+Net: Send roundtrip timestamp
+        Note over Client,Net: 🔄 Client reports DOM completion time<br/>For true end-to-end validation
+        Net-->>+WS: TERMINAL_LATENCY response
+        WS->>+LT: onClientRoundtripLatency(clientLatency)
+        Note right of LT: 📊 Record TRUE end-to-end latency<br/>⏱️ Complete widget visibility timing
+        LT-->>-WS: End-to-end latency recorded
     end
 
-    %% Latency Breakdown Analysis
-    Note over WS,LT: ⏱️ LATENCY BREAKDOWN ANALYSIS<br/>T1-T0: Message Interception (~0.01ms)<br/>T3-T2: Dictionary Lookup (~0.05ms)<br/>T4-T3: Hash Generation (~0.02ms)<br/>T5-T4: Message Encoding (~0.03ms)<br/>T6-T5: Frame Preparation (~0.02ms)<br/>T7-T6: Network Transmission (0.08ms average)<br/>TOTAL: T7-T0 = 0.21ms (with dictionary)
+    Note over App,UI: 📊 CORRECTED PERFORMANCE METRICS
 
-    %% Periodic Reporting
+    %% Corrected Performance Summary Box
+    rect rgb(255, 240, 240)
+        Note over LT,UI: 🎯 CORRECTED LATENCY MEASUREMENTS<br/>🔴 SERVER-SIDE ONLY: 0.21ms (Socket buffer write)<br/>🟢 TRUE END-TO-END: ~5-50ms (Network + Client + DOM)<br/>📊 Current "0.21ms" = Server processing only<br/>📊 Missing: 1-200ms network + 0.1-5ms client processing<br/>📊 Dictionary benefit: Real but understated<br/>📤 Network efficiency: 50% bandwidth reduction still valid
+    end
+
+    %% Corrected Latency Breakdown Analysis
+    Note over WS,UI: ⏱️ CORRECTED LATENCY BREAKDOWN<br/>🔴 SERVER-SIDE (Current measurement):<br/>T1-T0: Message Interception (~0.01ms)<br/>T3-T2: Dictionary Lookup (~0.05ms)<br/>T7-T6: Socket Buffer Write (~0.15ms)<br/>SUBTOTAL: T7-T0 = 0.21ms<br/><br/>🟡 NETWORK TRANSIT (Missing from measurement):<br/>TCP transmission: 1-200ms<br/>Browser processing: 0.1-1ms<br/><br/>🟢 CLIENT PROCESSING (Missing from measurement):<br/>UIBuilder processing: 0.1-2ms<br/>DOM appendChild(): 0.1-2ms<br/>TOTAL TRUE END-TO-END: 1.4-205ms
+
+    %% Updated Periodic Reporting
     loop Every 30 seconds
-        LT->>LT: Calculate percentiles from ringBuffer
-        LT->>LT: Generate performance report
-        Note right of LT: 📋 Export to JSON:<br/>run_default_all_on_export_N.json<br/>Contains: hit rates, latencies, throughput
+        LT->>LT: Calculate server-side percentiles
+        LT->>LT: Calculate end-to-end percentiles (if available)
+        LT->>LT: Generate corrected performance report
+        Note right of LT: 📋 Export corrected metrics:<br/>SERVER-SIDE ONLY: 0.21ms avg<br/>TRUE END-TO-END: ~15ms avg<br/>Dictionary compression: Still 5.9x faster
     end
 ```
 
@@ -146,14 +177,15 @@ sequenceDiagram
 | **DICTIONARY_REFERENCE** | ~4 bytes | 50% | **2x network savings** |
 | **Pattern Definition** | ~12 bytes | 150% (one-time cost) | Investment for future savings |
 
-### Network Latency Measurement Points
+### CORRECTED Network Latency Measurement Points
 
-| Stage | Network Component | Latency Contribution | Measurement Method |
-|-------|------------------|---------------------|-------------------|
-| **T6→T7** | WebSocket Transmission | 0.08ms average | `onFrameWriteSuccess()` callback |
-| **Network Transit** | TCP/IP Stack | 1-10ms (local) | OS-level networking |
-| **Client Processing** | JavaScript Engine | 0.1-0.5ms | Browser performance |
-| **DOM Updates** | UI Rendering | 0.5-2ms | Browser rendering engine |
+| Stage | Network Component | Latency Contribution | Current Measurement | Reality |
+|-------|------------------|---------------------|-------------------|---------|
+| **T0→T7** | Server Processing + Socket Write | 0.21ms average | ✅ **MEASURED** | Server-side only |
+| **Network Transit** | TCP/IP Stack | 1-200ms (location dependent) | ❌ **NOT MEASURED** | Missing from current system |
+| **Client Processing** | JavaScript UIBuilder | 0.1-5ms | ❌ **NOT MEASURED** | Missing from current system |
+| **DOM Updates** | Browser appendChild() | 0.1-2ms | ❌ **NOT MEASURED** | Missing from current system |
+| **TRUE END-TO-END** | **T0→TC4 (Complete)** | **1.4-207ms** | ❌ **NOT MEASURED** | **What users actually experience** |
 
 ### Protocol Efficiency Analysis
 
