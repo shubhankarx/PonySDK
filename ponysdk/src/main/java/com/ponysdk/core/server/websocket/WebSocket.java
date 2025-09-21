@@ -79,12 +79,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     // Dictionary compression settings (enabled by default)
     private final ModelValueDictionary dictionary = new ModelValueDictionary(2);
     private final List<ModelValuePair> currentBatch = new ArrayList<>();
-    private static final int BATCH_THRESHOLD = 2; // Reduced to capture button click patterns
-    private static boolean dictionaryEnabled = true; // Enabled by default (static for runtime control)
-    
-    // Feature control flags for testing different combinations (static for runtime control)
-    private static boolean trieEnabled = true;        // Widget trie prediction enabled by default
-    private static boolean codeT5Enabled = true;      // CodeT5/FastAPI prediction enabled by default
     
     // Track pattern IDs for sequence learning (groups of 3)
     private final List<Integer> patternSequence = new ArrayList<>(3);
@@ -127,7 +121,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * - Complete message patterns for each widget interaction (values at nodes)
      * - Prediction data for sequence completion
      */
-    private static final class WidgetTrieNode {
+    public static final class WidgetTrieNode {
         // Children map widget keys to next nodes in sequence
         final Map<String, WidgetTrieNode> children = new HashMap<>();
         
@@ -157,7 +151,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * 
      * WHY TRIE FOR THIS USE CASE?
      * 1. Prefix Matching: O(k) to check if current UI actions match start of any known pattern
-     * 2. Pattern Completion: Given prefix "PButton->PLabel", instantly find all possible completions
+     * 2. Pattern Completion: Given prefix "PButton-&gt;PLabel", instantly find all possible completions
      * 3. Space Efficiency: Common prefixes share nodes (e.g., many patterns starting with "PButton")
      * 4. Dynamic Learning: Add new patterns without restructuring existing data
      * 
@@ -168,7 +162,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * - Store complete patterns at terminals: Enables pattern retrieval for analysis
      * 
      * EXAMPLE STRUCTURE:
-     * If we have patterns [PButton->PLabel->PCheckBox] and [PButton->PLabel->PTextBox]:
+     * If we have patterns [PButton-&gt;PLabel-&gt;PCheckBox] and [PButton-&gt;PLabel-&gt;PTextBox]:
      * 
      *              root
      *               |
@@ -179,7 +173,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      *      PCheckBox   PTextBox
      *         (end)      (end)
      */
-    private static final class TrieNode {
+    public static final class TrieNode {
         // Children nodes - separate maps prevent key collision between types
         final Map<String, TrieNode> stringChildren = new HashMap<>();
         final Map<String, TrieNode> modelValuePairChildren = new HashMap<>();
@@ -215,88 +209,19 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         initialPatterns.add(Arrays.asList("PScript", "PLabel", "PScript"));
         initialPatterns.add(Arrays.asList("PFileUpload", "PButton", "PLabel"));
 
-        buildSemanticPatternTrieFromStrings(initialPatterns);
+        TrieUtilities.buildSemanticPatternTrieFromStrings(initialPatterns, DICT_TRIE);
         // Log the constructed Trie patterns at startup for easy verification.
         PRED.info("=== STARTUP TRIE SYSTEM INITIALIZED ===");
         PRED.info("Legacy String Trie: {} initial patterns loaded", initialPatterns.size());
         PRED.info("Widget Interaction Trie: Ready for learning");
         PRED.info("Dictionary Compression: Enabled (threshold=2)");
         PRED.info("Dumping initial string patterns:");
-        dumpTrie(DICT_TRIE, "");
+        TrieUtilities.dumpTrie(DICT_TRIE, "");
         PRED.info("Widget Interaction Trie: (empty - will learn from interactions)");
-        dumpWidgetTrie(WIDGET_TRIE, "", "");
+        TrieUtilities.dumpWidgetTrie(WIDGET_TRIE, "", "");
         PRED.info("=== END STARTUP TRIE SYSTEM DUMP ===");
     }
 
-    /**
-     * Builds trie from string patterns representing UI component sequences.
-     * 
-     * ALGORITHM:
-     * For each pattern [A, B, C]:
-     * 1. Start at root
-     * 2. For each element, create/navigate to child node
-     * 3. Mark final node as pattern end
-     * 4. Store complete pattern for retrieval
-     * 
-     * EXAMPLE:
-     * Input: [["PButton", "PLabel", "PCheckBox"], 
-     *         ["PButton", "PLabel", "PTextBox"],
-     *         ["PButton", "PTextArea", "PSubmit"]]
-     * 
-     * Creates trie:
-     *           root
-     *            |
-     *         PButton
-     *         /      \
-     *     PLabel    PTextArea
-     *     /    \        \
-     * PCheckBox PTextBox PSubmit
-     *   (end)    (end)    (end)
-     * 
-     * EDGE CASES:
-     * - Null/empty patterns: Skipped silently
-     * - Duplicate patterns: Harmlessly overwrites (idempotent)
-     * - Single element patterns: Allowed (though we focus on triplets)
-     * - Patterns sharing prefixes: Properly share nodes
-     * 
-     * TIME COMPLEXITY: O(n * k) where n = patterns, k = pattern length
-     * SPACE COMPLEXITY: O(total unique nodes) ≤ O(n * k)
-     * 
-     * @param patterns List of string sequences to add to trie
-     */
-    static void buildSemanticPatternTrieFromStrings(final List<List<String>> patterns) {
-        if (patterns == null) return;
-        
-        for (final List<String> pattern : patterns) {
-            // Skip invalid patterns
-            if (pattern == null || pattern.isEmpty()) {
-                PRED.debug("Skipping null/empty pattern");
-                continue;
-            }
-            
-            TrieNode currentNode = DICT_TRIE;
-            
-            // Build path for this pattern
-            for (final String element : pattern) {
-                if (element == null) {
-                    PRED.warn("Skipping pattern with null element: {}", pattern);
-                    break; // Don't add incomplete patterns
-                }
-                
-                // computeIfAbsent: atomic get-or-create operation
-                currentNode = currentNode.stringChildren.computeIfAbsent(
-                    element, k -> new TrieNode());
-            }
-            
-            // Mark pattern end and store complete pattern
-            currentNode.isEndOfPattern = true;
-            currentNode.completeStringPattern = new ArrayList<>(pattern); // Defensive copy
-            currentNode.patternFrequency++; // Track usage for adaptive learning
-            
-            PRED.debug("Added string pattern to trie: {} (frequency: {})", 
-                      pattern, currentNode.patternFrequency);
-        }
-    }
 
     /**
      * Legacy method for backward compatibility.
@@ -305,7 +230,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * @param patterns String patterns to add to trie
      */
     static void buildSemanticPatternTrie(final List<List<String>> patterns) {
-        buildSemanticPatternTrieFromStrings(patterns);
+        TrieUtilities.buildSemanticPatternTrieFromStrings(patterns, DICT_TRIE);
     }
 
     /**
@@ -745,78 +670,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         return currentNode.isEndOfPattern;
     }
 
-    /**
-     * Recursively dumps trie structure for debugging and monitoring.
-     * 
-     * OUTPUT EXAMPLE:
-     * Pattern: PButton -> PLabel -> PCheckBox [TRIPLET]
-     * Pattern: PButton -> PLabel -> PTextBox [TRIPLET]
-     * Pattern: [TYPE_CREATE:1] -> [WIDGET_TYPE:PButton] -> [WIDGET_ID:123] [TRIPLET]
-     * 
-     * ALGORITHM:
-     * 1. If current node is terminal, print pattern
-     * 2. Recursively visit all children
-     * 3. Build path string as we traverse
-     * 
-     * FORMAT:
-     * - String patterns: A -> B -> C [TRIPLET]
-     * - ModelValuePair: [KEY1] -> [KEY2] -> [KEY3] [TRIPLET]
-     * - Frequency shown if > 1
-     * 
-     * USE CASES:
-     * - Debug pattern learning
-     * - Monitor trie growth
-     * - Verify pattern storage
-     * - Analyze pattern distribution
-     * 
-     * PERFORMANCE WARNING:
-     * O(n) where n = total nodes in trie.
-     * Use sparingly in production.
-     * 
-     * @param node Current node in traversal
-     * @param prefix Path from root to current node
-     */
-    static void dumpTrie(final TrieNode node, final String prefix) {
-        if (node == null) {
-            PRED.info("TRIE DEBUG: Node is null at prefix: '{}'", prefix);
-            return;
-        }
-        
-        // Debug root node
-        if (prefix.isEmpty()) {
-            PRED.info("TRIE DEBUG: Starting trie dump from root");
-            PRED.info("TRIE DEBUG: Root has {} string children, {} modelValuePair children", 
-                     node.stringChildren.size(), node.modelValuePairChildren.size());
-        }
-        
-        // Print if this is a complete pattern
-        if (node.isEndOfPattern) {
-            String frequencyInfo = node.patternFrequency > 1 ? 
-                " (frequency: " + node.patternFrequency + ")" : "";
-            PRED.info("Pattern: {} [TRIPLET]{}", prefix, frequencyInfo);
-        }
-        
-        // Traverse string-based children
-        for (final Map.Entry<String, TrieNode> entry : node.stringChildren.entrySet()) {
-            final String childPrefix = prefix.isEmpty() ? 
-                entry.getKey() : 
-                prefix + " -> " + entry.getKey();
-            dumpTrie(entry.getValue(), childPrefix);
-        }
-        
-        // Traverse ModelValuePair-based children (with brackets)
-        for (final Map.Entry<String, TrieNode> entry : node.modelValuePairChildren.entrySet()) {
-            final String childPrefix = prefix.isEmpty() ? 
-                "[" + entry.getKey() + "]" : 
-                prefix + " -> [" + entry.getKey() + "]";
-            dumpTrie(entry.getValue(), childPrefix);
-        }
-        
-        // Debug if no children and not end
-        if (prefix.isEmpty() && node.stringChildren.isEmpty() && node.modelValuePairChildren.isEmpty() && !node.isEndOfPattern) {
-            PRED.info("TRIE DEBUG: Root node is completely empty!");
-        }
-    }
 
     // -- End of Semantic Pattern Matching for Prediction --
 
@@ -844,13 +697,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
             // Initialize Trie and CodeT5 features from ApplicationConfiguration
             final ApplicationConfiguration config = uiContext.getConfiguration();
-            // WebSocket.trieEnabled = true; // Original hardcoded - kept for reference
-            // WebSocket.codeT5Enabled = true; // Original hardcoded - kept for reference
-            WebSocket.trieEnabled = config.isTriePatternPredictionEnabled();
-            WebSocket.codeT5Enabled = config.isCodeT5SemanticAnalysisEnabled();
+            // WebSocket.WebSocketConfiguration.isTrieEnabled() = true; // Original hardcoded - kept for reference
+            // WebSocket.WebSocketConfiguration.isCodeT5Enabled() = true; // Original hardcoded - kept for reference
+            WebSocketConfiguration.setTrieEnabled(config.isTriePatternPredictionEnabled());
+            WebSocketConfiguration.setCodeT5Enabled(config.isCodeT5SemanticAnalysisEnabled());
             log.info("Trie prediction {} | CodeT5 analysis {} for UIContext #{}",
-                    trieEnabled ? "enabled" : "disabled",
-                    codeT5Enabled ? "enabled" : "disabled",
+                    WebSocketConfiguration.isTrieEnabled() ? "enabled" : "disabled",
+                    WebSocketConfiguration.isCodeT5Enabled() ? "enabled" : "disabled",
                     uiContext.getID());
 
             final CommunicationSanityChecker communicationSanityChecker = new CommunicationSanityChecker(uiContext);
@@ -911,7 +764,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     uiContext.acquire();
                     try {
                         PRED.info("Dumping registered prediction patterns (periodic check):");
-                        dumpTrie(DICT_TRIE, "");
+                        TrieUtilities.dumpTrie(DICT_TRIE, "");
                     } finally {
                         uiContext.release();
                     }
@@ -936,7 +789,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                             
                             if (patternIds.isEmpty()) {
                                 PRED.info("DEBUG: Dictionary is empty! Check if patterns are being recorded.");
-                                PRED.info("DEBUG: Dictionary enabled: {}", dictionaryEnabled);
+                                PRED.info("DEBUG: Dictionary enabled: {}", WebSocketConfiguration.isDictionaryEnabled());
                                 PRED.info("DEBUG: Current batch size: {}", currentBatch.size());
                             }
                             
@@ -951,9 +804,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                             // Always dump both tries regardless of dictionary contents
                             PRED.info("=== PERIODIC TRIE SYSTEM DUMP ===");
                             PRED.info("=== Legacy String Patterns ===");
-                            dumpTrie(DICT_TRIE, "");
+                            TrieUtilities.dumpTrie(DICT_TRIE, "");
                             PRED.info("=== Widget Interaction Sequences ===");
-                            dumpWidgetTrie(WIDGET_TRIE, "", "");
+                            TrieUtilities.dumpWidgetTrie(WIDGET_TRIE, "", "");
                             PRED.info("=== Widget Sequence Statistics ===");
                             synchronized (widgetSequenceLock) {
                                 PRED.info("Current sequence length: {}", widgetInteractionSequence.size());
@@ -1242,7 +1095,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         // For END frames, flush any pending batch first
-        if (dictionaryEnabled && !currentBatch.isEmpty()) {
+        if (WebSocketConfiguration.isDictionaryEnabled() && !currentBatch.isEmpty()) {
             if (model == ServerToClientModel.END_OF_PROCESSING && currentBatch.size() == 2) {
                 PRED.info("Flushing batch with END_OF_PROCESSING");
             }   
@@ -1255,7 +1108,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         // Skip dictionary for critical protocol frames
-        if (!dictionaryEnabled || isControlFrame(model)) {
+        if (!WebSocketConfiguration.isDictionaryEnabled() || isControlFrame(model)) {
             try {
                 if (loggerOut.isTraceEnabled())
                     loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
@@ -1387,7 +1240,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 
                 // Add to current batch and check threshold
                 currentBatch.add(pair);
-                if (currentBatch.size() >= BATCH_THRESHOLD) {
+                if (currentBatch.size() >= WebSocketConfiguration.getBatchThreshold()) {
                     flushCurrentBatch();
                 }
                 return;
@@ -1482,12 +1335,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Enable or disable dictionary compression
      */
     public void setDictionaryEnabled(boolean enabled) {
-        if (WebSocket.dictionaryEnabled != enabled) {
+        if (WebSocketConfiguration.isDictionaryEnabled() != enabled) {
             log.info("Dictionary compression {} for UIContext #{}", 
                     enabled ? "enabled" : "disabled", 
                     uiContext != null ? uiContext.getID() : "?");
             
-            WebSocket.dictionaryEnabled = enabled;
+            WebSocketConfiguration.setDictionaryEnabled(enabled);
             if (!enabled) {
                 // Clear current batch and dictionary when disabling
                 currentBatch.clear();
@@ -1501,12 +1354,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * When disabled, widget interaction sequences are not tracked and no predictions are made.
      */
     public void setTrieEnabled(boolean enabled) {
-        if (this.trieEnabled != enabled) {
+        if (WebSocketConfiguration.isTrieEnabled() != enabled) {
             log.info("Widget Trie prediction {} for UIContext #{}", 
                     enabled ? "enabled" : "disabled", 
                     uiContext != null ? uiContext.getID() : "?");
             
-            this.trieEnabled = enabled;
+            WebSocketConfiguration.setTrieEnabled(enabled);
             if (!enabled) {
                 // Clear widget interaction tracking when disabling
                 synchronized (widgetSequenceLock) {
@@ -1524,12 +1377,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * When disabled, no HTTP calls are made to the prediction service.
      */
     public void setCodeT5Enabled(boolean enabled) {
-        if (this.codeT5Enabled != enabled) {
+        if (WebSocketConfiguration.isCodeT5Enabled() != enabled) {
             log.info("CodeT5/FastAPI prediction {} for UIContext #{}", 
                     enabled ? "enabled" : "disabled", 
                     uiContext != null ? uiContext.getID() : "?");
             
-            this.codeT5Enabled = enabled;
+            WebSocketConfiguration.setCodeT5Enabled(enabled);
             if (!enabled) {
                 // Clear pattern buffer when disabling
                 synchronized (predictionLock) {
@@ -1545,7 +1398,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      */
     public static void setDictionaryEnabledGlobally(boolean enabled) {
         log.info("Dictionary compression {} globally", enabled ? "ENABLED" : "DISABLED");
-        dictionaryEnabled = enabled;
+        WebSocketConfiguration.setDictionaryEnabled(enabled);
     }
     
     /**
@@ -1553,7 +1406,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      */
     public static void setTrieEnabledGlobally(boolean enabled) {
         log.info("Widget Trie prediction {} globally", enabled ? "ENABLED" : "DISABLED");
-        trieEnabled = enabled;
+        WebSocketConfiguration.setTrieEnabled(enabled);
     }
     
     /**
@@ -1561,7 +1414,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      */
     public static void setCodeT5EnabledGlobally(boolean enabled) {
         log.info("CodeT5/FastAPI prediction {} globally", enabled ? "ENABLED" : "DISABLED");
-        codeT5Enabled = enabled;
+        WebSocketConfiguration.setCodeT5Enabled(enabled);
     }
 
     public void sendUIComponent(String componentType, String componentId, String componentText) {
@@ -1711,9 +1564,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         // but client never received these pattern definitions. Later, server would send DICTIONARY_REFERENCE #1
         // but client would respond "Unknown instruction type" because it never got pattern #1's definition.
         // This caused UI breakage: buttons stopped working, "Unknown instruction" errors flooded console.
-        // ROOT CAUSE: flushCurrentBatch() called dictionary.recordPattern() regardless of dictionaryEnabled state.
+        // ROOT CAUSE: flushCurrentBatch() called dictionary.recordPattern() regardless of WebSocketConfiguration.isDictionaryEnabled() state.
         // SOLUTION: Only use dictionary logic when enabled, ensuring perfect client-server pattern synchronization.
-        if (!dictionaryEnabled) {
+        if (!WebSocketConfiguration.isDictionaryEnabled()) {
             PRED.debug("Dictionary disabled - sending raw messages (batch size: {})", currentBatch.size());
             try {
                 for (ModelValuePair p : currentBatch) {
@@ -1768,7 +1621,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     List<String> triplet = patternSequence.stream()
                         .map(id -> "Pattern#" + id)
                         .collect(Collectors.toList());
-                    buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet));
+                    TrieUtilities.buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet), DICT_TRIE);
                     PRED.info("Trie fed with NEW pattern triplet: {}", triplet);
                     patternSequence.clear(); // Reset for next triplet
                 }
@@ -1834,7 +1687,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     List<String> triplet = patternSequence.stream()
                         .map(id -> "Pattern#" + id)
                         .collect(Collectors.toList());
-                    buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet));
+                    TrieUtilities.buildSemanticPatternTrieFromStrings(Collections.singletonList(triplet), DICT_TRIE);
                     PRED.info("Trie fed with EXISTING pattern triplet: {}", triplet);
                     patternSequence.clear(); // Reset for next triplet
                 }
@@ -1957,7 +1810,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         
         try {
             // Store complete message pattern for this widget (only if trie is enabled)
-            if (trieEnabled) {
+            if (WebSocketConfiguration.isTrieEnabled()) {
                 widgetMessagePatterns.put(currentWidgetKey, new ArrayList<>(currentWidgetMessages));
                 
                 // Add widget to interaction sequence
@@ -1997,7 +1850,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Try to predict the next widget based on the current sequence.
      */
     private void tryPredictNextWidget() {
-        if (!trieEnabled) return;  // Feature control check
+        if (!WebSocketConfiguration.isTrieEnabled()) return;  // Feature control check
         if (widgetInteractionSequence.size() < 2) return;
         
         try {
@@ -2056,7 +1909,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * Validate our previous prediction against the actual widget.
      */
     private void validatePrediction() {
-        if (!trieEnabled) return;  // Feature control check
+        if (!WebSocketConfiguration.isTrieEnabled()) return;  // Feature control check
         if (lastPredictedWidget == null || currentWidgetKey == null) {
             return;
         }
@@ -2134,25 +1987,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         currentWidgetMessages.clear();
     }
     
-    /**
-     * Dump widget interaction trie for debugging.
-     */
-    static void dumpWidgetTrie(final WidgetTrieNode node, final String prefix, final String path) {
-        if (node == null) return;
-        
-        if (node.isEndOfSequence && node.completeWidgetSequence != null) {
-            PRED.info("Widget Sequence: {} [COMPLETE] (frequency: {})", 
-                     path, node.sequenceFrequency);
-            if (node.completeMessagePattern != null) {
-                PRED.info("  → Message Pattern: {}", node.completeMessagePattern);
-            }
-        }
-        
-        for (Map.Entry<String, WidgetTrieNode> entry : node.children.entrySet()) {
-            String childPath = path.isEmpty() ? entry.getKey() : path + " → " + entry.getKey();
-            dumpWidgetTrie(entry.getValue(), prefix + "  ", childPath);
-        }
-    }
 //12#26 → 12#27 → 12#28
 
     /**
@@ -2175,7 +2009,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * blocking the main WebSocket processing thread.
      */
     private void sendJsonPostRequestUsingHttpURLConnection(List<String> instructionsToSend) {
-        if (!codeT5Enabled) {
+        if (!WebSocketConfiguration.isCodeT5Enabled()) {
             PRED.debug("CodeT5/FastAPI disabled - skipping HTTP call for {} instructions", instructionsToSend.size());
             return;  // Feature control check
         }
@@ -2362,7 +2196,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     // The core logic for the triplet-only prediction algorithm.
     private void processInstructionForPrediction(final String componentType, final String fullInstruction) {
-        if (!codeT5Enabled) {
+        if (!WebSocketConfiguration.isCodeT5Enabled()) {
             PRED.debug("CodeT5/FastAPI disabled - skipping pattern processing for component: {}", componentType);
             return;  // Feature control check
         }
@@ -2418,9 +2252,9 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     //    buildSemanticPatternTrie(accumulatedPatterns);
                     if (!isKnownTriplet(componentTypes)) {
                         // directly register *this* 3-element pattern
-                        buildSemanticPatternTrieFromStrings(Collections.singletonList(componentTypes));
+                        TrieUtilities.buildSemanticPatternTrieFromStrings(Collections.singletonList(componentTypes), DICT_TRIE);
                         PRED.info("Learned new triplet: {}", componentTypes);
-                        dumpTrie(DICT_TRIE, "");
+                        TrieUtilities.dumpTrie(DICT_TRIE, "");
                     }
                     // Reset for the next round by clearing the buffer.
                     currentPatternBuffer.clear();
@@ -2434,7 +2268,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     // Sends any buffered instructions individually to the prediction service.
     private void flushBufferedInstructions() {
-        if (!codeT5Enabled) return;  // Feature control check
+        if (!WebSocketConfiguration.isCodeT5Enabled()) return;  // Feature control check
         
         synchronized (predictionLock) {
             // Check if there are any instructions left in the buffer.
