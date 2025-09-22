@@ -77,6 +77,10 @@ public class UIBuilder {
     // Flag to prevent infinite recursion during pattern replay
     private boolean isInPatternReplay = false;
 
+    // Dictionary latency tracking
+    private boolean isDictionaryMessage = false;
+    private double dictionaryStartTime = 0;
+
     private RequestBuilder requestBuilder;
 
     private int currentWindowId = -1;
@@ -123,7 +127,20 @@ public class UIBuilder {
 
             if (ServerToClientModel.ROUNDTRIP_LATENCY == model) {
                 final PTInstruction requestData = new PTInstruction();
-                requestData.put(ClientToServerModel.TERMINAL_LATENCY, System.currentTimeMillis() - lastReceivedMessage);
+                final long terminalLatency = System.currentTimeMillis() - lastReceivedMessage;
+                requestData.put(ClientToServerModel.TERMINAL_LATENCY, terminalLatency);
+
+                // Include dictionary latency data if this was a dictionary message
+                if (isDictionaryMessage) {
+                    final double dictionaryLatency = com.google.gwt.core.client.Duration.currentTimeMillis() - dictionaryStartTime;
+                    // Add dictionary fields as custom properties using JSONObject put method
+                    requestData.put("IS_DICTIONARY", new com.google.gwt.json.client.JSONNumber(1));
+                    requestData.put("DICTIONARY_TERMINAL_LATENCY", new com.google.gwt.json.client.JSONNumber((long)dictionaryLatency));
+                    // Reset dictionary tracking
+                    isDictionaryMessage = false;
+                    dictionaryStartTime = 0;
+                }
+
                 requestBuilder.send(requestData);
                 readerBuffer.readBinaryModel(); // Read ServerToClientModel.END element
             } else if (ServerToClientModel.CREATE_CONTEXT == model) {
@@ -254,6 +271,9 @@ public class UIBuilder {
             } else if (ServerToClientModel.TYPE_HISTORY == model) {
                 processHistory(buffer, binaryModel.getStringValue());
             } else if (ServerToClientModel.DICTIONARY_PATTERN_START == model) {
+                // Start dictionary message timing
+                isDictionaryMessage = true;
+                dictionaryStartTime = com.google.gwt.core.client.Duration.currentTimeMillis();
                 /*
                  * CRITICAL PROTOCOL FIX: Dictionary Pattern Message Boundary Handling
                  * =====================================================================

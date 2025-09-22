@@ -103,6 +103,9 @@ public class UIContext {
     private final Latency roundtripLatency = new Latency(10);
     private final Latency networkLatency = new Latency(10);
     private final Latency terminalLatency = new Latency(10);
+    private final Latency dictionaryRoundtripLatency = new Latency(10);
+    private final Latency dictionaryNetworkLatency = new Latency(10);
+    private final Latency dictionaryTerminalLatency = new Latency(10);
 
     private final ApplicationConfiguration configuration;
     private final WebSocket socket;
@@ -786,6 +789,60 @@ public class UIContext {
      */
     public double getTerminalLatency() {
         return terminalLatency.getValue();
+    }
+
+    /**
+     * Adds a dictionary roundtrip latency value
+     *
+     * @param value the value
+     */
+    public void addDictionaryRoundtripLatencyValue(final long value) {
+        dictionaryRoundtripLatency.add(value);
+    }
+
+    /**
+     * Gets an average dictionary roundtrip latency from the last 10 measurements
+     *
+     * @return the latency
+     */
+    public double getDictionaryRoundtripLatency() {
+        return dictionaryRoundtripLatency.getValue();
+    }
+
+    /**
+     * Adds a dictionary network latency value
+     *
+     * @param value the value
+     */
+    public void addDictionaryNetworkLatencyValue(final long value) {
+        dictionaryNetworkLatency.add(value);
+    }
+
+    /**
+     * Gets an average dictionary network latency from the last 10 measurements
+     *
+     * @return the latency
+     */
+    public double getDictionaryNetworkLatency() {
+        return dictionaryNetworkLatency.getValue();
+    }
+
+    /**
+     * Adds a dictionary terminal latency value
+     *
+     * @param value the value
+     */
+    public void addDictionaryTerminalLatencyValue(final long value) {
+        dictionaryTerminalLatency.add(value);
+    }
+
+    /**
+     * Gets an average dictionary terminal latency from the last 10 measurements
+     *
+     * @return the latency
+     */
+    public double getDictionaryTerminalLatency() {
+        return dictionaryTerminalLatency.getValue();
     }
 
     private static final class Latency {

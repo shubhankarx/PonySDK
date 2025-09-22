@@ -365,10 +365,17 @@ public class MetricsExporter {
         json.append("      \"max_ms\": ").append(safeDouble(getMaxEndToEndLatencyMs())).append(",\n");
         json.append("      \"source\": \"TERMINAL_LATENCY responses from WebSocketClient.updateMainTerminal()\",\n");
         json.append("      \"measurement_point\": \"Server ROUNDTRIP_LATENCY → Client response time\"\n");
+        json.append("    },\n");
+        json.append("    \"dictionary_specific_latency\": {\n");
+        json.append("      \"roundtrip_ms\": ").append(safeDouble(getDictionaryRoundtripLatencyMs())).append(",\n");
+        json.append("      \"network_ms\": ").append(safeDouble(getDictionaryNetworkLatencyMs())).append(",\n");
+        json.append("      \"terminal_ms\": ").append(safeDouble(getDictionaryTerminalLatencyMs())).append(",\n");
+        json.append("      \"description\": \"Latency measurements specifically for dictionary-compressed messages\",\n");
+        json.append("      \"measurement_scope\": \"DICTIONARY_PATTERN_START and DICTIONARY_REFERENCE messages only\"\n");
         json.append("    }\n");
         json.append("  }");
     }
-    
+
     private void appendFeatureMetrics(StringBuilder json) {
         json.append("  \"feature_metrics\": {\n");
         
@@ -684,7 +691,41 @@ public class MetricsExporter {
             return 0.0;
         }
     }
-    
+
+    // Dictionary-specific latency metrics
+    private double getDictionaryRoundtripLatencyMs() {
+        try {
+            // This would need UIContext access for dictionary-specific roundtrip latency
+            // For now, return 0.0 as placeholder - requires UIContext integration
+            return 0.0;
+        } catch (Exception e) {
+            log.debug("Error getting dictionary roundtrip latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
+    private double getDictionaryNetworkLatencyMs() {
+        try {
+            // This would need UIContext access for dictionary-specific network latency
+            // For now, return 0.0 as placeholder - requires UIContext integration
+            return 0.0;
+        } catch (Exception e) {
+            log.debug("Error getting dictionary network latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
+    private double getDictionaryTerminalLatencyMs() {
+        try {
+            // This would need UIContext access for dictionary-specific terminal latency
+            // For now, return 0.0 as placeholder - requires UIContext integration
+            return 0.0;
+        } catch (Exception e) {
+            log.debug("Error getting dictionary terminal latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
     // Dictionary metrics with safe access
     private long getDictionaryHitCount() {
         try {

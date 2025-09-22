@@ -1058,6 +1058,20 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         log.trace("Network measurement : {} ms from terminal #{}", networkLatency, uiContext.getID());
         uiContext.addNetworkLatencyValue(networkLatency);
 
+        // Check if this is a dictionary message
+        if (jsonObject.containsKey("IS_DICTIONARY") && jsonObject.getJsonNumber("IS_DICTIONARY").intValue() == 1) {
+            final long dictionaryTerminalLatency = jsonObject.getJsonNumber("DICTIONARY_TERMINAL_LATENCY").longValue();
+            final long dictionaryNetworkLatency = roundtripLatency - dictionaryTerminalLatency;
+
+            log.trace("Dictionary roundtrip measurement : {} ms from terminal #{}", roundtripLatency, uiContext.getID());
+            log.trace("Dictionary terminal measurement : {} ms from terminal #{}", dictionaryTerminalLatency, uiContext.getID());
+            log.trace("Dictionary network measurement : {} ms from terminal #{}", dictionaryNetworkLatency, uiContext.getID());
+
+            uiContext.addDictionaryRoundtripLatencyValue(roundtripLatency);
+            uiContext.addDictionaryTerminalLatencyValue(dictionaryTerminalLatency);
+            uiContext.addDictionaryNetworkLatencyValue(dictionaryNetworkLatency);
+        }
+
         // Add roundtrip latency to LatencyTracker for unified stats
         if (listener instanceof LatencyTracker) {
             ((LatencyTracker) listener).onClientRoundtripLatency(terminalLatency);
