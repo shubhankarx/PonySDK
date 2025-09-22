@@ -356,6 +356,16 @@ public class MetricsExporter {
         json.append("      \"estimated_ms\": ").append(safeDouble(getEstimatedClientLatencyMs())).append(",\n");
         json.append("      \"listener_placement\": \"Client receive → UIBuilder.apply()\"\n");
         json.append("    }\n");
+        json.append("  },\n");
+        json.append("  \"client_latency_details\": {\n");
+        json.append("    \"roundtrip_measurements\": {\n");
+        json.append("      \"count\": ").append(safeLong(getEndToEndLatencyCount())).append(",\n");
+        json.append("      \"avg_ms\": ").append(safeDouble(getAvgEndToEndLatencyMs())).append(",\n");
+        json.append("      \"min_ms\": ").append(safeDouble(getMinEndToEndLatencyMs())).append(",\n");
+        json.append("      \"max_ms\": ").append(safeDouble(getMaxEndToEndLatencyMs())).append(",\n");
+        json.append("      \"source\": \"TERMINAL_LATENCY responses from WebSocketClient.updateMainTerminal()\",\n");
+        json.append("      \"measurement_point\": \"Server ROUNDTRIP_LATENCY → Client response time\"\n");
+        json.append("    }\n");
         json.append("  }");
     }
     
@@ -628,10 +638,49 @@ public class MetricsExporter {
     
     private double getEstimatedClientLatencyMs() {
         try {
-            // L1c: Client receive → Client parse/apply
-            return 0.0; // TODO: Implement when client-side instrumentation is added
+            // L1c: Client receive → Client parse/apply - NOW IMPLEMENTED via roundtrip latency!
+            return latencyTracker.getAvgEndToEndLatencyMillis();
         } catch (Exception e) {
             log.debug("Error getting client latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
+    // End-to-end latency metrics from client roundtrip measurements
+    private long getEndToEndLatencyCount() {
+        try {
+            return latencyTracker.getEndToEndCount();
+        } catch (Exception e) {
+            log.debug("Error getting end-to-end count: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    private double getAvgEndToEndLatencyMs() {
+        try {
+            return latencyTracker.getAvgEndToEndLatencyMillis();
+        } catch (Exception e) {
+            log.debug("Error getting avg end-to-end latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
+    private double getMinEndToEndLatencyMs() {
+        try {
+            long min = latencyTracker.getMinEndToEndLatencyMillis();
+            return min == Long.MAX_VALUE ? 0.0 : min;
+        } catch (Exception e) {
+            log.debug("Error getting min end-to-end latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+
+    private double getMaxEndToEndLatencyMs() {
+        try {
+            long max = latencyTracker.getMaxEndToEndLatencyMillis();
+            return max == Long.MIN_VALUE ? 0.0 : max;
+        } catch (Exception e) {
+            log.debug("Error getting max end-to-end latency: {}", e.getMessage());
             return 0.0;
         }
     }

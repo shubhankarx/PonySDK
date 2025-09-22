@@ -1057,6 +1057,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         final long networkLatency = roundtripLatency - terminalLatency;
         log.trace("Network measurement : {} ms from terminal #{}", networkLatency, uiContext.getID());
         uiContext.addNetworkLatencyValue(networkLatency);
+
+        // Add roundtrip latency to LatencyTracker for unified stats
+        if (listener instanceof LatencyTracker) {
+            ((LatencyTracker) listener).onClientRoundtripLatency(terminalLatency);
+        }
     }
 
     private void processInstructions(final JsonObject jsonObject) {

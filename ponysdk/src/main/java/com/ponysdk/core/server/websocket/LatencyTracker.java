@@ -78,6 +78,13 @@ public final class LatencyTracker implements WebSocket.Listener {
     private final AtomicLong serverOnlyCount = new AtomicLong(0);
     private final AtomicLong totalServerOnlyLatencyNanos = new AtomicLong(0);
 
+    // CLIENT-SIDE LATENCY TRACKING (Message Receipt → DOM Update)
+    private final AtomicLong clientMessageStartTime = new AtomicLong(0);
+    private final AtomicLong clientLatencyCount = new AtomicLong(0);
+    private final AtomicLong totalClientLatencyMillis = new AtomicLong(0);
+    private final AtomicLong minClientLatencyMillis = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong maxClientLatencyMillis = new AtomicLong(Long.MIN_VALUE);
+
     // Periodic reporting control
     private volatile long lastReportTimeMillis = System.currentTimeMillis();
     private static final long REPORT_INTERVAL_MILLIS = 30000; // 30 seconds
@@ -532,7 +539,57 @@ public final class LatencyTracker implements WebSocket.Listener {
                 totalWrites, totalBytes, minMs, p50Ms, p90Ms, p95Ms, p99Ms, maxMs);
         }
     }
-    
+
+    // ========== CLIENT-SIDE LATENCY TRACKING METHODS ==========
+
+    /**
+     * Start timing when message is received from server (called from WebSocketClient)
+     */
+    public void startClientTiming() {
+        clientMessageStartTime.set(System.currentTimeMillis());
+    }
+
+    /**
+     * End timing when UI building completes (called from UIBuilder)
+     */
+    public void endClientTiming() {
+        long startTime = clientMessageStartTime.getAndSet(0);
+        if (startTime == 0) return; // No active timing
+
+        long latencyMs = System.currentTimeMillis() - startTime;
+
+        // Update statistics
+        clientLatencyCount.incrementAndGet();
+        totalClientLatencyMillis.addAndGet(latencyMs);
+
+        // Update min/max bounds
+        long currentMin = minClientLatencyMillis.get();
+        while (latencyMs < currentMin &&
+               !minClientLatencyMillis.compareAndSet(currentMin, latencyMs)) {
+            currentMin = minClientLatencyMillis.get();
+        }
+
+        long currentMax = maxClientLatencyMillis.get();
+        while (latencyMs > currentMax &&
+               !maxClientLatencyMillis.compareAndSet(currentMax, latencyMs)) {
+            currentMax = maxClientLatencyMillis.get();
+        }
+
+        // Log every 100 messages or significant latency (>50ms)
+        long count = clientLatencyCount.get();
+        if (count % 100 == 0 || latencyMs > 50) {
+            double avgLatency = (double) totalClientLatencyMillis.get() / count;
+            long minLatency = minClientLatencyMillis.get();
+            long maxLatency = maxClientLatencyMillis.get();
+
+            log.info("CLIENT LATENCY: {}ms (avg: {:.1f}ms, min: {}ms, max: {}ms, count: {})",
+                    latencyMs, avgLatency,
+                    minLatency == Long.MAX_VALUE ? 0 : minLatency,
+                    maxLatency == Long.MIN_VALUE ? 0 : maxLatency,
+                    count);
+        }
+    }
+
     // ========== Getter Methods for MetricsExporter Integration ==========
 
     public long getMinLatencyNanos() { return minLatencyNanos.get(); }
@@ -551,6 +608,16 @@ public final class LatencyTracker implements WebSocket.Listener {
     public long getMaxCodeT5LatencyNanos() { return maxCodeT5LatencyNanos.get(); }
     public long getTotalTransmissions() { return totalTransmissions.get(); }
     public long getTotalTransmittedBytes() { return totalTransmittedBytes.get(); }
+
+    // Client-side end-to-end latency getters
+    public long getEndToEndCount() { return endToEndCount.get(); }
+    public long getTotalEndToEndLatencyMillis() { return totalEndToEndLatencyMillis.get(); }
+    public long getMinEndToEndLatencyMillis() { return minEndToEndLatencyMillis.get(); }
+    public long getMaxEndToEndLatencyMillis() { return maxEndToEndLatencyMillis.get(); }
+    public double getAvgEndToEndLatencyMillis() {
+        long count = endToEndCount.get();
+        return count > 0 ? (double) totalEndToEndLatencyMillis.get() / count : 0.0;
+    }
 
     // WebSocket.Listener unused callbacks
     @Override public void onIncomingText(String text) {}
