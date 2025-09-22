@@ -11,6 +11,21 @@ import java.util.concurrent.atomic.AtomicLong;
  * Measures 5 stages: intercept → dictionary → hash → encode → transmit
  */
 public final class LatencyTracker implements WebSocket.Listener {
+
+    /**
+     * Static helper to consolidate repetitive latency tracking patterns
+     */
+    public static void track(WebSocket.Listener listener, String operation, Object... params) {
+        if (listener instanceof LatencyTracker) {
+            LatencyTracker tracker = (LatencyTracker) listener;
+            switch (operation) {
+                case "intercept": tracker.onInterceptMessage((String) params[0], params[1]); break;
+                case "encode": tracker.onEncode((ServerToClientModel) params[0], params[1]); break;
+                case "dictLookup": tracker.onDictionaryLookup((String) params[0], (Boolean) params[1]); break;
+                case "codeT5": tracker.onCodeT5Query((Boolean) params[0], (Long) params[1], (String) params[2]); break;
+            }
+        }
+    }
     
     private static final Logger log = LoggerFactory.getLogger(LatencyTracker.class);
     

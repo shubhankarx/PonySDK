@@ -69,24 +69,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private String lastPredictedWidget = null;
     private final Object widgetSequenceLock = new Object();
 
-    // Helper method to consolidate repetitive latency tracking
-    private void trackLatency(String operation, Object... params) {
-        if (listener instanceof LatencyTracker) {
-            LatencyTracker tracker = (LatencyTracker) listener;
-            switch (operation) {
-                case "intercept": tracker.onInterceptMessage((String) params[0], params[1]); break;
-                case "encode": tracker.onEncode((ServerToClientModel) params[0], params[1]); break;
-                case "dictLookup": tracker.onDictionaryLookup((String) params[0], (Boolean) params[1]); break;
-                case "codeT5": tracker.onCodeT5Query((Boolean) params[0], (Long) params[1], (String) params[2]); break;
-            }
-        }
-    }
-
-    // Helper method to consolidate repetitive encoding pattern
-    private void encodeAndNotify(ServerToClientModel model, Object value) throws IOException {
-        websocketPusher.encode(model, value);
-        if (listener != null) listener.onOutgoingPonyFrame(model, value);
-    }
 
 
     /**
@@ -1004,7 +986,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         PRED.info("Model S2C {} {}", model, value);
         
         // Stage 1: Intercept message for latency tracking
-        trackLatency("intercept", model.name(), value);
+        LatencyTracker.track(listener, "intercept", model.name(), value);
         if (UIContext.get() == null) {
             log.warn("encode in websocket without current ui context acquired", new Exception());
             uiContext.acquire();
@@ -1031,14 +1013,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         }
 
         // Skip dictionary for critical protocol frames
-        if (!WebSocketConfiguration.isDictionaryEnabled() || isControlFrame(model)) {
+        if (!WebSocketConfiguration.isDictionaryEnabled() || ModelValidationUtils.isControlFrame(model)) {
             try {
                 if (loggerOut.isTraceEnabled())
                     loggerOut.trace("UIContext #{} : {} {}", this.uiContext.getID(), model, value);
                 // Stage 4: Track encoding
-                trackLatency("encode", model, value);
-                websocketPusher.encode(model, value);
-                if (listener != null) listener.onOutgoingPonyFrame(model, value);
+                LatencyTracker.track(listener, "encode", model, value);
+                WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, model, value);
             } catch (final IOException e) {
                 log.error("Can't write on the websocket for UIContext #{}, so we destroy the application", uiContext.getID(), e);
                 uiContext.destroy();
@@ -1064,14 +1045,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 model == ServerToClientModel.DICTIONARY_REFERENCE) {
                 
                 // Stage 4: Track encoding (alternative path)
-                trackLatency("encode", model, value);
+                LatencyTracker.track(listener, "encode", model, value);
                 websocketPusher.encode(model, value);
                 if (listener != null) listener.onOutgoingPonyFrame(model, value);
                 return;
             }
             
             // Process TYPE commands specially (start new dictionary contexts for this frame)
-            if (isTypeCommand(model)) {
+            if (ModelValidationUtils.isTypeCommand(model)) {
                 // Flush any pending batches to ensure clean command sequence
                 if (!dictionaryEngine.getCurrentBatch().isEmpty()) {
                     flushCurrentBatch();
@@ -1084,7 +1065,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 PRED.debug("SINGLE TYPE: Dictionary returned patternId: {}", patternId);
                 
                 // Track single message dictionary lookup
-                trackLatency("dictLookup", "type_pattern", patternId != null);
+                LatencyTracker.track(listener, "dictLookup", "type_pattern", patternId != null);
                 
                 if (patternId != null) {
                     // Use existing pattern reference for single TYPE command
@@ -1174,18 +1155,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     /**
      * Check if a model is a critical control frame that should bypass dictionary
      */
-    private static final Set<ServerToClientModel> CONTROL_FRAMES = Set.of(
-        ServerToClientModel.CREATE_CONTEXT, ServerToClientModel.OPTION_FORMFIELD_TABULATION,
-        ServerToClientModel.HEARTBEAT_PERIOD, ServerToClientModel.HEARTBEAT,
-        ServerToClientModel.ROUNDTRIP_LATENCY, ServerToClientModel.TYPE_ADD_HANDLER,
-        ServerToClientModel.TYPE_REMOVE_HANDLER, ServerToClientModel.HANDLER_TYPE,
-        ServerToClientModel.WINDOW_ID, ServerToClientModel.FRAME_ID,
-        ServerToClientModel.FUNCTION_ID, ServerToClientModel.DICTIONARY_PATTERN_START,
-        ServerToClientModel.DICTIONARY_REFERENCE, ServerToClientModel.END);
-
-    private boolean isControlFrame(final ServerToClientModel model) {
-        return CONTROL_FRAMES.contains(model);
-    }
     
     /**
      * Handle dictionary pattern request from client
@@ -1456,7 +1425,7 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
             PRED.debug("Dictionary disabled - sending raw messages (batch size: {})", dictionaryEngine.getCurrentBatch().size());
             try {
                 for (ModelValuePair p : dictionaryEngine.getCurrentBatch()) {
-                    encodeAndNotify(p.getModel(), p.getValue());
+                    WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, p.getModel(), p.getValue());
                 }
             } catch (final Exception e) {
                 log.error("Error sending raw batch for UIContext #{}", uiContext.getID(), e);
@@ -1539,16 +1508,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 //                      cascading failures - one broken message corrupts all subsequent
                 // 
                 // Send the pattern inline without protocol wrappers
-                encodeAndNotify(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
+                WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, ServerToClientModel.DICTIONARY_PATTERN_START, newId);
 
                 // Send each ModelValuePair in the pattern
                 for (ModelValuePair p : snapshot) {
-                    encodeAndNotify(p.getModel(), p.getValue());
+                    WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, p.getModel(), p.getValue());
                 }
 
                 // End pattern definition
-                encodeAndNotify(ServerToClientModel.DICTIONARY_PATTERN_END, null);
-                encodeAndNotify(ServerToClientModel.END, null);
+                WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, ServerToClientModel.DICTIONARY_PATTERN_END, null);
+                WebSocketEncodingUtils.encodeAndNotify(websocketPusher, listener, ServerToClientModel.END, null);
                 flush0();
                 
                 PRED.info("SYNC FIX: Sent pattern definition #{} to client - future references will work", newId);
@@ -1634,46 +1603,25 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     private void trackWidgetInteractionData(final ServerToClientModel model, final Object value) {
         synchronized (widgetSequenceLock) {
             try {
-                // Detect widget ID from TYPE_UPDATE or TYPE_CREATE
-                if (model == ServerToClientModel.TYPE_UPDATE && value instanceof Integer) {
-                    currentWidgetId = (Integer) value;
-                    PRED.debug("Detected widget ID: {}", currentWidgetId);
+                Integer widgetId = null;
+                String widgetType = null;
+
+                // Extract widget ID and type
+                if ((model == ServerToClientModel.TYPE_UPDATE || model == ServerToClientModel.TYPE_CREATE) && value instanceof Integer) {
+                    widgetId = (Integer) value;
+                } else if (model == ServerToClientModel.WIDGET_TYPE && value != null) {
+                    widgetType = value instanceof Integer ?
+                        WidgetType.fromRawValue((Integer) value).name() : value.toString();
                 }
-                else if (model == ServerToClientModel.TYPE_CREATE && value instanceof Integer) {
-                    currentWidgetId = (Integer) value;
-                    PRED.debug("Detected new widget ID: {}", currentWidgetId);
+
+                // Track using engine
+                if (widgetId != null || widgetType != null) {
+                    widgetTracker.trackWidgetInteraction(widgetId, widgetType);
                 }
-                
-                // Detect widget type (handle both Integer ordinals and String values)
-                else if (model == ServerToClientModel.WIDGET_TYPE && value != null) {
-                    if (value instanceof Integer) {
-                        // Convert enum ordinal to widget type name
-                        try {
-                            int ordinal = (Integer) value;
-                            currentWidgetType = WidgetType.fromRawValue(ordinal).name();
-                            PRED.debug("Detected widget type from ordinal {}: {}", ordinal, currentWidgetType);
-                        } catch (Exception e) {
-                            // Fallback for unknown ordinals
-                            currentWidgetType = "WIDGET_TYPE_" + value;
-                            PRED.debug("Unknown widget type ordinal {}, using fallback: {}", value, currentWidgetType);
-                        }
-                    } else {
-                        // Handle string values directly
-                        currentWidgetType = value.toString();
-                        PRED.debug("Detected widget type from string: {}", currentWidgetType);
-                    }
-                    
-                    // Store widget type mapping for future reference
-                    if (currentWidgetId != null) {
-                        widgetTypeById.put(currentWidgetId, currentWidgetType);
-                        currentWidgetKey = currentWidgetType + "#" + currentWidgetId;
-                        PRED.debug("Built widget key: {} and stored type mapping", currentWidgetKey);
-                    }
-                }
-                
-                // Add all messages to current widget (they'll be used for prediction)
+
+                // Add message to current widget
                 currentWidgetMessages.add(new ModelValuePair(model, value));
-                
+
             } catch (Exception e) {
                 PRED.error("Error tracking widget interaction data: {}", e.getMessage(), e);
             }
@@ -1685,14 +1633,14 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
      * This happens when we finish processing all messages for a widget.
      */
     private void completeCurrentWidgetInteraction() {
-        if (currentWidgetKey == null || currentWidgetMessages.isEmpty()) {
+        if (widgetTracker.getCurrentWidgetKey() == null || currentWidgetMessages.isEmpty()) {
             return;
         }
         
         try {
             // Store complete message pattern for this widget (only if trie is enabled)
             if (WebSocketConfiguration.isTrieEnabled()) {
-                widgetMessagePatterns.put(currentWidgetKey, new ArrayList<>(currentWidgetMessages));
+                widgetTracker.associateMessagePattern(widgetTracker.getCurrentWidgetKey(), new ArrayList<>(currentWidgetMessages));
                 
                 // Add widget to interaction sequence
                 widgetInteractionSequence.add(currentWidgetKey);
@@ -1873,15 +1821,6 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     /**
      * Helper method to check if a model is a TYPE_* command
      */
-    private static final Set<ServerToClientModel> TYPE_COMMANDS = Set.of(
-        ServerToClientModel.TYPE_CREATE, ServerToClientModel.TYPE_UPDATE,
-        ServerToClientModel.TYPE_ADD, ServerToClientModel.TYPE_REMOVE,
-        ServerToClientModel.TYPE_ADD_HANDLER, ServerToClientModel.TYPE_REMOVE_HANDLER,
-        ServerToClientModel.TYPE_GC);
-
-    private boolean isTypeCommand(final ServerToClientModel model) {
-        return TYPE_COMMANDS.contains(model);
-    }
 
     /**
      * Demonstrates a JSON POST request using HttpURLConnection.
