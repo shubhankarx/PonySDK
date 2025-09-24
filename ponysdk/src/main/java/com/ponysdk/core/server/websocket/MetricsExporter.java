@@ -277,6 +277,10 @@ public class MetricsExporter {
             appendLatencyBoundaries(json);
             json.append(",\n");
             
+            // Message correlation tracking for true end-to-end latency
+            appendMessageCorrelationMetrics(json);
+            json.append(",\n");
+            
             // DEMO REQUIREMENTS point 3: Feature-specific metrics with hit-rates
             appendFeatureMetrics(json);
             json.append(",\n");
@@ -328,6 +332,21 @@ public class MetricsExporter {
         json.append("    \"warmup_duration_ms\": ").append(codeT5WarmupTimeMs).append(",\n");
         json.append("    \"time_to_first_token_ms\": ").append(timeToFirstTokenMs).append(",\n");
         json.append("    \"cold_start_excluded_from_latency\": ").append(codeT5ModelWarmed).append("\n");
+        json.append("  }");
+    }
+    
+    private void appendMessageCorrelationMetrics(StringBuilder json) {
+        json.append("  \"message_correlation\": {\n");
+        json.append("    \"enabled\": ").append(getMessageCorrelationEnabled()).append(",\n");
+        json.append("    \"tracked_messages\": ").append(safeLong(getCorrelatedMessageCount())).append(",\n");
+        json.append("    \"acknowledged_messages\": ").append(safeLong(getAcknowledgedMessageCount())).append(",\n");
+        json.append("    \"pending_messages\": ").append(safeLong(getPendingMessageCount())).append(",\n");
+        json.append("    \"acknowledgment_rate_percent\": ").append(safeDouble(getAcknowledgmentRate())).append(",\n");
+        json.append("    \"avg_correlation_latency_ms\": ").append(safeDouble(getAvgCorrelationLatencyMs())).append(",\n");
+        json.append("    \"min_correlation_latency_ms\": ").append(safeDouble(getMinCorrelationLatencyMs())).append(",\n");
+        json.append("    \"max_correlation_latency_ms\": ").append(safeDouble(getMaxCorrelationLatencyMs())).append(",\n");
+        json.append("    \"description\": \"True end-to-end latency from server message send to client DOM completion\",\n");
+        json.append("    \"measurement_points\": \"Server beginObject() → Client MESSAGE_ACK\"\n");
         json.append("  }");
     }
     
@@ -938,6 +957,82 @@ public class MetricsExporter {
         } catch (Exception e) {
             log.debug("Error getting per-message-type latency: {}", e.getMessage());
             return "{}";
+        }
+    }
+    
+    // Message correlation metrics for true end-to-end latency tracking
+    private boolean getMessageCorrelationEnabled() {
+        try {
+            return LatencyTracker.isMessageCorrelationEnabled();
+        } catch (Exception e) {
+            log.debug("Error checking message correlation status: {}", e.getMessage());
+            return false;
+        }
+    }
+    
+    private long getCorrelatedMessageCount() {
+        try {
+            return latencyTracker.getCorrelatedMessageCount();
+        } catch (Exception e) {
+            log.debug("Error getting correlated message count: {}", e.getMessage());
+            return 0;
+        }
+    }
+    
+    private long getAcknowledgedMessageCount() {
+        try {
+            return latencyTracker.getAcknowledgedMessageCount();
+        } catch (Exception e) {
+            log.debug("Error getting acknowledged message count: {}", e.getMessage());
+            return 0;
+        }
+    }
+    
+    private long getPendingMessageCount() {
+        try {
+            return latencyTracker.getPendingMessageCount();
+        } catch (Exception e) {
+            log.debug("Error getting pending message count: {}", e.getMessage());
+            return 0;
+        }
+    }
+    
+    private double getAcknowledgmentRate() {
+        try {
+            long acknowledged = getAcknowledgedMessageCount();
+            long total = getCorrelatedMessageCount();
+            if (total == 0) return 0.0;
+            return (acknowledged * 100.0) / total;
+        } catch (Exception e) {
+            log.debug("Error calculating acknowledgment rate: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+    
+    private double getAvgCorrelationLatencyMs() {
+        try {
+            return latencyTracker.getAvgCorrelationLatencyMs();
+        } catch (Exception e) {
+            log.debug("Error getting average correlation latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+    
+    private double getMinCorrelationLatencyMs() {
+        try {
+            return latencyTracker.getMinCorrelationLatencyMs();
+        } catch (Exception e) {
+            log.debug("Error getting minimum correlation latency: {}", e.getMessage());
+            return 0.0;
+        }
+    }
+    
+    private double getMaxCorrelationLatencyMs() {
+        try {
+            return latencyTracker.getMaxCorrelationLatencyMs();
+        } catch (Exception e) {
+            log.debug("Error getting maximum correlation latency: {}", e.getMessage());
+            return 0.0;
         }
     }
 }

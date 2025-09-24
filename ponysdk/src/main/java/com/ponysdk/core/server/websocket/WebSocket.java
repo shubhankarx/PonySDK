@@ -88,6 +88,11 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
     
     // Track pattern IDs for sequence learning (groups of 3)
     private final List<Integer> patternSequence = new ArrayList<>(3);
+    
+    // Object ID tracking for message correlation
+    private Integer currentObjectId = null;
+    private boolean trackingEnabled = false;
+    private String lastTrackedObjectId = null;
 
     // -- Start of Semantic Pattern Matching for Prediction --
 
@@ -1029,6 +1034,10 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     // Handle dictionary pattern request
                     final int patternId = jsonObject.getJsonNumber(ClientToServerModel.DICTIONARY_REQUEST.toStringValue()).intValue();
                     handleDictionaryRequest(patternId);
+                } else if (jsonObject.containsKey(ClientToServerModel.MESSAGE_ACK.toStringValue())) {
+                    // Handle message acknowledgment for end-to-end latency tracking
+                    final String objectId = jsonObject.getString(ClientToServerModel.MESSAGE_ACK.toStringValue());
+                    processMessageAcknowledgment(objectId);
                 } else {
                     log.error("Unknown message from terminal #{} : {}", uiContext.getID(), message);
                 }
@@ -1061,6 +1070,16 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
         // Add roundtrip latency to LatencyTracker for unified stats
         if (listener instanceof LatencyTracker) {
             ((LatencyTracker) listener).onClientRoundtripLatency(terminalLatency);
+        }
+    }
+    
+    /**
+     * Process message acknowledgment from client for end-to-end latency tracking
+     */
+    private void processMessageAcknowledgment(final String objectId) {
+        if (LatencyTracker.isMessageCorrelationEnabled() && listener instanceof LatencyTracker) {
+            ((LatencyTracker) listener).onMessageAcknowledged(objectId);
+            log.trace("📥 Message ACK processed for object: {}", objectId);
         }
     }
 
@@ -1217,18 +1236,51 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
 
     @Override
     public void beginObject() {
-        // Nothing to do
+        // Message correlation tracking is now handled in encode() method immediately when object ID is set
+        // This avoids the timing issue where beginObject() was called before currentObjectId was available
+        
+        // Keep this method for any future beginObject-specific functionality
+        // Currently no action needed here as correlation starts in encode()
     }
 
     @Override
     public void endObject() {
         encode(ServerToClientModel.END, null);
+        
+        // Call enhanced latency tracking with object ID
+        if (trackingEnabled && lastTrackedObjectId != null && LatencyTracker.isMessageCorrelationEnabled()) {
+            if (listener instanceof LatencyTracker) {
+                ((LatencyTracker) listener).onFrameWriteSuccessWithObjectId(lastTrackedObjectId);
+            }
+        }
+        
+        // Reset tracking after object completes  
+        trackingEnabled = false;
+        currentObjectId = null;
+        lastTrackedObjectId = null;
     }
 
     @Override
     public void encode(final ServerToClientModel model, final Object value) {
         Integer ref = null; // Move ref declaration here
         PRED.info("Model S2C {} {}", model, value);
+        
+        // Track object IDs for message correlation and start timing immediately
+        if (model == ServerToClientModel.TYPE_CREATE || 
+            model == ServerToClientModel.TYPE_UPDATE || 
+            model == ServerToClientModel.TYPE_ADD) {
+            if (value instanceof Integer) {
+                currentObjectId = (Integer) value;
+                trackingEnabled = true;
+                
+                // CRITICAL FIX: Start message correlation immediately when object ID is set
+                // This fixes the timing issue where beginObject() was called before objectId was available
+                if (LatencyTracker.isMessageCorrelationEnabled() && listener instanceof LatencyTracker) {
+                    lastTrackedObjectId = String.valueOf(currentObjectId);
+                    ((LatencyTracker) listener).onMessageSent(lastTrackedObjectId);
+                }
+            }
+        }
         
         // Stage 1: Intercept message for latency tracking
         if (listener instanceof LatencyTracker) {

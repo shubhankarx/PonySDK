@@ -93,7 +93,10 @@ public enum ClientToServerModel {
     
     // Dictionary optimization
     DICTIONARY_REQUEST("W"),
-    DICTIONARY_ENABLED("X");
+    DICTIONARY_ENABLED("X"),
+    
+    // Message correlation for latency tracking
+    MESSAGE_ACK("Y");           // Client acknowledges message completion (uses OBJECT_ID for correlation)
 
     private final String key;
 

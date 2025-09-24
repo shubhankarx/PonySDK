@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * High-frequency trading latency tracker for WebSocket message pipeline.
@@ -59,6 +60,9 @@ public final class LatencyTracker implements WebSocket.Listener {
     // Track current transmission's dictionary usage
     private volatile boolean currentTransmissionUsedDictionary = false;
     
+    // Track current message ID for dictionary flag updates
+    private volatile String currentMessageId = null;
+    
     // Aggregate metrics
     private final AtomicLong totalTransmissions = new AtomicLong(0);
     private final AtomicLong totalTransmittedBytes = new AtomicLong(0);
@@ -67,6 +71,39 @@ public final class LatencyTracker implements WebSocket.Listener {
     
     // Frame type distribution tracking
     private final ConcurrentHashMap<ServerToClientModel, AtomicLong> frameTypeDistribution = new ConcurrentHashMap<>();
+    
+    // ========== MESSAGE CORRELATION FEATURE (can be disabled/removed easily) ==========
+    // Feature flag - set to false to completely disable message correlation
+    private static final boolean ENABLE_MESSAGE_CORRELATION = true;
+    
+    // Message ID correlation tracking (only allocated if feature enabled)
+    private final ConcurrentHashMap<String, MessageLatencyData> messageTracking = 
+            ENABLE_MESSAGE_CORRELATION ? new ConcurrentHashMap<>() : null;
+    private final AtomicLong correlatedMessageCount = new AtomicLong(0);
+    private final AtomicLong acknowledgedMessageCount = new AtomicLong(0);
+    private final AtomicLong totalCorrelationLatencyMs = new AtomicLong(0);
+    private final AtomicLong minCorrelationLatencyMs = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong maxCorrelationLatencyMs = new AtomicLong(Long.MIN_VALUE);
+    
+    // Enhanced dictionary-specific end-to-end tracking
+    private final AtomicLong dictionaryEndToEndCount = new AtomicLong(0);
+    private final AtomicLong totalDictionaryEndToEndMs = new AtomicLong(0);
+    private final AtomicLong noDictionaryEndToEndCount = new AtomicLong(0);
+    private final AtomicLong totalNoDictionaryEndToEndMs = new AtomicLong(0);
+    
+    // Configuration constants
+    private static final int MAX_PENDING_MESSAGES = 10000;
+    private static final long CLEANUP_INTERVAL_MS = 30000;
+    
+    // ========== INDIVIDUAL TIMING STORAGE ==========
+    // Store individual timing data per message ID with dictionary classification
+    private final ConcurrentHashMap<String, CompletedMessageTiming> completedTimings = 
+            ENABLE_MESSAGE_CORRELATION ? new ConcurrentHashMap<>() : null;
+    
+    // Configuration for individual timing storage
+    private static final int MAX_COMPLETED_TIMINGS = 10000;
+    private static final long TIMING_RETENTION_MS = 300000; // 5 minutes
+    // ========== END MESSAGE CORRELATION FEATURE ==========
 
     // TRUE END-TO-END LATENCY TRACKING (Server → Client DOM Ready)
     private final AtomicLong endToEndCount = new AtomicLong(0);
@@ -128,6 +165,15 @@ public final class LatencyTracker implements WebSocket.Listener {
         if (cacheHit) {
             dictionaryHitCount.incrementAndGet();
             currentTransmissionUsedDictionary = true; // Mark current transmission as using dictionary
+            
+            // CRITICAL FIX: Update any pending correlation data with correct dictionary flag
+            if (ENABLE_MESSAGE_CORRELATION && currentMessageId != null) {
+                MessageLatencyData data = messageTracking.get(currentMessageId);
+                if (data != null) {
+                    data.usedDictionary = true; // Fix timing issue: update after dictionary processing
+                }
+            }
+            
             log.debug("Dictionary cache HIT: {}", patternKey);
         } else {
             dictionaryMissCount.incrementAndGet();
@@ -206,7 +252,8 @@ public final class LatencyTracker implements WebSocket.Listener {
     @Override
     public void onOutgoingPonyFrame(ServerToClientModel frameType, Object frameValue) {
         // Mark transmission start time on first frame of batch
-        transmissionStartNanos.compareAndSet(0, System.nanoTime());
+        long currentTime = System.nanoTime();
+        transmissionStartNanos.compareAndSet(0, currentTime);
         
         // Track frame type distribution
         frameTypeDistribution.computeIfAbsent(frameType, k -> new AtomicLong()).incrementAndGet();
@@ -267,6 +314,26 @@ public final class LatencyTracker implements WebSocket.Listener {
     }
     
     /**
+     * Enhanced frame write success with correlation (called from WebSocket with object ID)
+     */
+    public void onFrameWriteSuccessWithObjectId(String objectId) {
+        if (!ENABLE_MESSAGE_CORRELATION || objectId == null) return;
+        
+        MessageLatencyData data = messageTracking.get(objectId);
+        if (data != null) {
+            // Get server latency from the current transmission
+            long startNanos = transmissionStartNanos.get();
+            if (startNanos > 0) {
+                data.serverLatencyNanos = System.nanoTime() - startNanos;
+                if (data.isComplete()) {
+                    updateCorrelationStats(data);
+                    messageTracking.remove(objectId);
+                }
+            }
+        }
+    }
+    
+    /**
      * Thread-safe min update using CAS
      */
     private void updateMinLatency(long newValue) {
@@ -283,6 +350,26 @@ public final class LatencyTracker implements WebSocket.Listener {
         long currentMax;
         while ((currentMax = maxLatencyNanos.get()) < newValue) {
             if (maxLatencyNanos.compareAndSet(currentMax, newValue)) break;
+        }
+    }
+    
+    /**
+     * Thread-safe min correlation latency update using CAS
+     */
+    private void updateMinCorrelationLatency(long newValue) {
+        long currentMin;
+        while ((currentMin = minCorrelationLatencyMs.get()) > newValue) {
+            if (minCorrelationLatencyMs.compareAndSet(currentMin, newValue)) break;
+        }
+    }
+    
+    /**
+     * Thread-safe max correlation latency update using CAS
+     */
+    private void updateMaxCorrelationLatency(long newValue) {
+        long currentMax;
+        while ((currentMax = maxCorrelationLatencyMs.get()) < newValue) {
+            if (maxCorrelationLatencyMs.compareAndSet(currentMax, newValue)) break;
         }
     }
     
@@ -370,7 +457,9 @@ public final class LatencyTracker implements WebSocket.Listener {
         log.info("Latency: p50={}ms, p95={}ms, p99={}ms", 
             String.format("%.2f", calculatePercentile(50)), String.format("%.2f", calculatePercentile(95)), String.format("%.2f", calculatePercentile(99)));
             
-        // Dictionary performance comparison
+        // DEPRECATED: Old network-only dictionary performance comparison
+        // This measures frame write → network ACK timing only (not user-perceived latency)
+        /*
         long dictMsgs = messagesWithDictionary.get();
         long noDictMsgs = messagesWithoutDictionary.get();
         
@@ -387,25 +476,50 @@ public final class LatencyTracker implements WebSocket.Listener {
             log.info("SERVER-SIDE ONLY: {}ms avg ({} measurements) [Socket Buffer Write Only]",
                 String.format("%.2f", avgServerOnlyMs), serverOnlyCount.get());
 
-            // True end-to-end measurements
-            double avgEndToEndMs = endToEndCount.get() > 0 ?
+            // Terminal latency (heartbeat measurements - client processing only)
+            double avgTerminalMs = endToEndCount.get() > 0 ?
                 totalEndToEndLatencyMillis.get() / (double) endToEndCount.get() : 0;
-            log.info("TRUE END-TO-END: {}ms avg ({} measurements) [Network + Client DOM Ready]",
-                String.format("%.2f", avgEndToEndMs), endToEndCount.get());
+            log.info("TERMINAL LATENCY: {}ms avg ({} measurements) [Client Processing Only]",
+                String.format("%.2f", avgTerminalMs), endToEndCount.get());
 
-            if (endToEndCount.get() > 0) {
+            // True end-to-end measurements from MESSAGE_ACK correlation
+            double avgCorrelationMs = acknowledgedMessageCount.get() > 0 ?
+                totalCorrelationLatencyMs.get() / (double) acknowledgedMessageCount.get() : 0;
+            log.info("TRUE END-TO-END: {}ms avg ({} measurements) [Network + Client DOM Ready]",
+                String.format("%.2f", avgCorrelationMs), acknowledgedMessageCount.get());
+
+            if (acknowledgedMessageCount.get() > 0) {
                 log.info("End-to-End Range: min={}ms, max={}ms",
-                    minEndToEndLatencyMillis.get(), maxEndToEndLatencyMillis.get());
+                    minCorrelationLatencyMs.get() == Long.MAX_VALUE ? 0 : minCorrelationLatencyMs.get(),
+                    maxCorrelationLatencyMs.get() == Long.MIN_VALUE ? 0 : maxCorrelationLatencyMs.get());
             }
 
-            log.info("=== DICTIONARY PERFORMANCE COMPARISON ===");
+            log.info("=== DEPRECATED DICTIONARY COMPARISON (Network ACK Only) ===");
             log.info("WITH Dictionary: {}ms avg ({} transmissions)",
                 String.format("%.2f", avgDictLatency), dictMsgs);
             log.info("WITHOUT Dictionary: {}ms avg ({} transmissions)",
                 String.format("%.2f", avgNoDictLatency), noDictMsgs);
+        }
+        */
+        
+        // NEW: End-to-end dictionary performance comparison using correlation timing
+        long endToEndDictMsgs = dictionaryEndToEndCount.get();
+        long endToEndNoDictMsgs = noDictionaryEndToEndCount.get();
+        
+        if (endToEndDictMsgs > 0 && endToEndNoDictMsgs > 0) {
+            // Use true end-to-end correlation timing (server start → client DOM + ACK)
+            double avgEndToEndDictLatency = totalDictionaryEndToEndMs.get() / (double) endToEndDictMsgs;
+            double avgEndToEndNoDictLatency = totalNoDictionaryEndToEndMs.get() / (double) endToEndNoDictMsgs;
+            double endToEndImprovement = ((avgEndToEndNoDictLatency - avgEndToEndDictLatency) / avgEndToEndNoDictLatency) * 100;
+
+            log.info("=== DICTIONARY PERFORMANCE COMPARISON (End-to-End) ===");
+            log.info("WITH Dictionary: {}ms avg ({} messages) [Server→Client DOM+ACK]",
+                String.format("%.2f", avgEndToEndDictLatency), endToEndDictMsgs);
+            log.info("WITHOUT Dictionary: {}ms avg ({} messages) [Server→Client DOM+ACK]",
+                String.format("%.2f", avgEndToEndNoDictLatency), endToEndNoDictMsgs);
             log.info("Performance Impact: {}% {}",
-                String.format("%.1f", Math.abs(improvement)),
-                improvement > 0 ? "IMPROVEMENT" : "OVERHEAD");
+                String.format("%.1f", Math.abs(endToEndImprovement)),
+                endToEndImprovement > 0 ? "IMPROVEMENT" : "OVERHEAD");
             
             // Calculate percentiles for each category
             log.info("Dictionary percentiles: p50={}ms, p95={}ms, p99={}ms",
@@ -416,12 +530,12 @@ public final class LatencyTracker implements WebSocket.Listener {
                 String.format("%.2f", calculatePercentileForCategory(50, false)),
                 String.format("%.2f", calculatePercentileForCategory(95, false)),
                 String.format("%.2f", calculatePercentileForCategory(99, false)));
-        } else if (dictMsgs > 0) {
-            double avgDictLatency = totalDictionaryLatencyNanos.get() / 1_000_000.0 / dictMsgs;
-            log.info("Dictionary ONLY: {}ms avg ({} transmissions)", String.format("%.2f", avgDictLatency), dictMsgs);
-        } else if (noDictMsgs > 0) {
-            double avgNoDictLatency = totalNoDictionaryLatencyNanos.get() / 1_000_000.0 / noDictMsgs;
-            log.info("No-Dictionary ONLY: {}ms avg ({} transmissions)", String.format("%.2f", avgNoDictLatency), noDictMsgs);
+        } else if (endToEndDictMsgs > 0) {
+            double avgEndToEndDictLatency = totalDictionaryEndToEndMs.get() / (double) endToEndDictMsgs;
+            log.info("Dictionary ONLY (End-to-End): {}ms avg ({} messages)", String.format("%.2f", avgEndToEndDictLatency), endToEndDictMsgs);
+        } else if (endToEndNoDictMsgs > 0) {
+            double avgEndToEndNoDictLatency = totalNoDictionaryEndToEndMs.get() / (double) endToEndNoDictMsgs;
+            log.info("No-Dictionary ONLY (End-to-End): {}ms avg ({} messages)", String.format("%.2f", avgEndToEndNoDictLatency), endToEndNoDictMsgs);
         }
         
         // Log top 3 frame types
@@ -539,6 +653,102 @@ public final class LatencyTracker implements WebSocket.Listener {
                 totalWrites, totalBytes, minMs, p50Ms, p90Ms, p95Ms, p99Ms, maxMs);
         }
     }
+    
+    /**
+     * Message latency data for correlation tracking
+     */
+    private static class MessageLatencyData {
+        long startTime;                 // When server processing completes (set later)
+        final String messageId;         // Unique identifier
+        boolean usedDictionary;         // Dictionary compression flag
+        Long serverLatencyNanos;        // Set in onFrameWriteSuccess()
+        Long endToEndLatencyMs;         // Set in onMessageAcknowledged()
+        
+        MessageLatencyData(long startTime, String messageId, boolean usedDictionary) {
+            this.startTime = startTime;
+            this.messageId = messageId;
+            this.usedDictionary = usedDictionary;
+        }
+        
+        boolean isComplete() {
+            return serverLatencyNanos != null && endToEndLatencyMs != null;
+        }
+    }
+    
+    /**
+     * Individual message timing record with dictionary classification
+     */
+    private static class CompletedMessageTiming {
+        final String messageId;                 // Object ID (e.g., "123")
+        final long endToEndLatencyMs;           // Complete server→client timing
+        final long serverLatencyMs;             // Server processing only
+        final boolean usedDictionary;           // Dictionary compression flag
+        final long completionTimestamp;         // When measurement completed
+        final long networkClientLatencyMs;      // Network + Client processing time
+        
+        CompletedMessageTiming(MessageLatencyData data) {
+            this.messageId = data.messageId;
+            this.endToEndLatencyMs = data.endToEndLatencyMs;
+            this.serverLatencyMs = data.serverLatencyNanos != null ? data.serverLatencyNanos / 1_000_000 : 0;
+            this.usedDictionary = data.usedDictionary;
+            this.completionTimestamp = System.currentTimeMillis();
+            this.networkClientLatencyMs = this.endToEndLatencyMs - this.serverLatencyMs;
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("ID=%s, E2E=%dms, Server=%dms, Network=%dms, Dict=%s", 
+                messageId, endToEndLatencyMs, serverLatencyMs, networkClientLatencyMs, usedDictionary);
+        }
+    }
+    
+    // ========== MEMORY MANAGEMENT METHODS ==========
+    
+    /**
+     * Cleanup expired and excessive timing records
+     */
+    private void cleanupCompletedTimings() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) return;
+        
+        // Size-based cleanup
+        if (completedTimings.size() > MAX_COMPLETED_TIMINGS) {
+            cleanupOldestTimings();
+        }
+        
+        // Time-based cleanup  
+        cleanupExpiredTimings();
+    }
+    
+    /**
+     * Remove oldest 20% when size limit exceeded
+     */
+    private void cleanupOldestTimings() {
+        int targetSize = (int)(MAX_COMPLETED_TIMINGS * 0.8);
+        
+        completedTimings.entrySet().stream()
+            .sorted(java.util.Comparator.comparing(e -> e.getValue().completionTimestamp))
+            .limit(completedTimings.size() - targetSize)
+            .forEach(entry -> completedTimings.remove(entry.getKey()));
+            
+        log.debug("Cleaned up {} oldest timing records, remaining: {}", 
+            completedTimings.size() - targetSize, completedTimings.size());
+    }
+    
+    /**
+     * Remove timing records older than retention period
+     */
+    private void cleanupExpiredTimings() {
+        long cutoff = System.currentTimeMillis() - TIMING_RETENTION_MS;
+        int initialSize = completedTimings.size();
+        
+        completedTimings.entrySet().removeIf(entry -> 
+            entry.getValue().completionTimestamp < cutoff);
+            
+        int removedCount = initialSize - completedTimings.size();
+        if (removedCount > 0) {
+            log.debug("Cleaned up {} expired timing records", removedCount);
+        }
+    }
 
     // ========== CLIENT-SIDE LATENCY TRACKING METHODS ==========
 
@@ -590,6 +800,159 @@ public final class LatencyTracker implements WebSocket.Listener {
         }
     }
 
+    // ========== MESSAGE CORRELATION METHODS (Feature Flag Controlled) ==========
+    
+    /**
+     * Track message send (no-op if feature disabled)
+     */
+    public void onMessageSent(String messageId) {
+        if (!ENABLE_MESSAGE_CORRELATION || messageId == null) return;
+        
+        correlatedMessageCount.incrementAndGet();
+        currentMessageId = messageId; // Track current message for dictionary flag updates
+        MessageLatencyData data = new MessageLatencyData(
+            System.nanoTime(), 
+            messageId, 
+            currentTransmissionUsedDictionary
+        );
+        messageTracking.put(messageId, data);
+        
+        if (messageTracking.size() > MAX_PENDING_MESSAGES) {
+            cleanupOldMessages();
+        }
+    }
+    
+    /**
+     * Track message acknowledgment (no-op if feature disabled)
+     */
+    public void onMessageAcknowledged(String messageId) {
+        if (!ENABLE_MESSAGE_CORRELATION || messageId == null) return;
+        
+        MessageLatencyData data = messageTracking.get(messageId);
+        if (data == null) {
+            log.debug("Unknown message ID: {}", messageId);
+            return;
+        }
+        
+        acknowledgedMessageCount.incrementAndGet();
+        data.endToEndLatencyMs = (System.nanoTime() - data.startTime) / 1_000_000; // Convert nanos to millis
+        
+        // Update correlation latency stats (following existing pattern)
+        long latencyMs = data.endToEndLatencyMs;
+        totalCorrelationLatencyMs.addAndGet(latencyMs);
+        updateMinCorrelationLatency(latencyMs);
+        updateMaxCorrelationLatency(latencyMs);
+        
+        // DO NOT call onClientRoundtripLatency() here - correlation metrics are tracked separately
+        
+        // Update dictionary stats if complete
+        if (data.isComplete()) {
+            updateCorrelationStats(data);
+            messageTracking.remove(messageId);
+            
+            // Clear current message ID if this was the current one
+            if (messageId.equals(currentMessageId)) {
+                currentMessageId = null;
+            }
+        }
+    }
+    
+    /**
+     * Enhanced frame write success with correlation (backward compatible)
+     */
+    public void onFrameWriteSuccess(String messageId) {
+        // Always call original method
+        onFrameWriteSuccess();
+        
+        if (!ENABLE_MESSAGE_CORRELATION || messageId == null) return;
+        
+        MessageLatencyData data = messageTracking.get(messageId);
+        if (data != null) {
+            // Get server latency from the current transmission (already calculated in parent method)
+            long serverNanos = System.nanoTime() - transmissionStartNanos.get();
+            data.serverLatencyNanos = serverNanos > 0 ? serverNanos : 1_000_000L; // Default 1ms if timing issue
+            if (data.isComplete()) {
+                updateCorrelationStats(data);
+                messageTracking.remove(messageId);
+            }
+        }
+    }
+    
+    /**
+     * Update statistics when correlation is complete AND store individual timing
+     */
+    private void updateCorrelationStats(MessageLatencyData data) {
+        double serverMs = data.serverLatencyNanos != null ? data.serverLatencyNanos / 1_000_000.0 : 0;
+        double e2eMs = data.endToEndLatencyMs;
+        
+        // ========== EXISTING AGGREGATION (UNCHANGED) ==========
+        // Update dictionary-specific stats
+        if (data.usedDictionary) {
+            dictionaryEndToEndCount.incrementAndGet();
+            totalDictionaryEndToEndMs.addAndGet(data.endToEndLatencyMs);
+        } else {
+            noDictionaryEndToEndCount.incrementAndGet();
+            totalNoDictionaryEndToEndMs.addAndGet(data.endToEndLatencyMs);
+        }
+        
+        // Log significant latencies
+        if (e2eMs > 50) {
+            log.info("Msg {} (dict={}): Server={}ms, E2E={}ms, Net+Client={}ms",
+                data.messageId, data.usedDictionary, 
+                String.format("%.1f", serverMs), 
+                String.format("%.1f", e2eMs), 
+                String.format("%.1f", e2eMs - serverMs));
+        }
+        
+        // ========== NEW: STORE INDIVIDUAL TIMING ==========
+        if (ENABLE_MESSAGE_CORRELATION && completedTimings != null) {
+            CompletedMessageTiming timing = new CompletedMessageTiming(data);
+            completedTimings.put(data.messageId, timing);
+            
+            // Periodic cleanup to prevent memory leaks
+            if (completedTimings.size() % 100 == 0) {
+                cleanupCompletedTimings();
+            }
+        }
+    }
+    
+    /**
+     * Cleanup old messages (no-op if feature disabled)
+     */
+    private void cleanupOldMessages() {
+        if (!ENABLE_MESSAGE_CORRELATION) return;
+        
+        long cutoff = System.nanoTime() - (CLEANUP_INTERVAL_MS * 1_000_000); // Convert ms to nanos
+        final AtomicInteger removed = new AtomicInteger(0);
+        
+        messageTracking.entrySet().removeIf(e -> {
+            if (e.getValue().startTime < cutoff) {
+                removed.incrementAndGet();
+                return true;
+            }
+            return false;
+        });
+        
+        if (removed.get() > 0) {
+            log.debug("Cleaned {} orphaned messages", removed.get());
+        }
+    }
+    
+    /**
+     * Get pending message count (0 if disabled)
+     */
+    public int getPendingMessageCount() {
+        return ENABLE_MESSAGE_CORRELATION ? messageTracking.size() : 0;
+    }
+    
+    /**
+     * Check if message correlation is enabled
+     */
+    public static boolean isMessageCorrelationEnabled() {
+        return ENABLE_MESSAGE_CORRELATION;
+    }
+    // ========== END MESSAGE CORRELATION METHODS ==========
+
     // ========== Getter Methods for MetricsExporter Integration ==========
 
     public long getMinLatencyNanos() { return minLatencyNanos.get(); }
@@ -617,6 +980,177 @@ public final class LatencyTracker implements WebSocket.Listener {
     public double getAvgEndToEndLatencyMillis() {
         long count = endToEndCount.get();
         return count > 0 ? (double) totalEndToEndLatencyMillis.get() / count : 0.0;
+    }
+
+    // Message correlation getters
+    public long getCorrelatedMessageCount() { return correlatedMessageCount.get(); }
+    public long getAcknowledgedMessageCount() { return acknowledgedMessageCount.get(); }
+    public double getAvgCorrelationLatencyMs() {
+        long acknowledged = acknowledgedMessageCount.get();
+        if (acknowledged == 0) return 0.0;
+        return totalCorrelationLatencyMs.get() / (double) acknowledged;
+    }
+    public double getMinCorrelationLatencyMs() {
+        long min = minCorrelationLatencyMs.get();
+        return min == Long.MAX_VALUE ? 0.0 : min;
+    }
+    public double getMaxCorrelationLatencyMs() {
+        long max = maxCorrelationLatencyMs.get();
+        return max == Long.MIN_VALUE ? 0.0 : max;
+    }
+
+    // ========== INDIVIDUAL TIMING ACCESS METHODS ==========
+
+    /**
+     * Get all completed message timings (with cleanup)
+     */
+    public java.util.Map<String, CompletedMessageTiming> getCompletedTimings() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return java.util.Collections.emptyMap();
+        }
+        cleanupCompletedTimings(); // Cleanup expired entries
+        return new java.util.HashMap<>(completedTimings);
+    }
+
+    /**
+     * Get timing for specific message ID
+     */
+    public CompletedMessageTiming getTimingById(String messageId) {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return null;
+        }
+        return completedTimings.get(messageId);
+    }
+
+    /**
+     * Get count of stored individual timings
+     */
+    public int getStoredTimingCount() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return 0;
+        }
+        return completedTimings.size();
+    }
+
+    /**
+     * Get all messages that used dictionary compression
+     */
+    public java.util.List<CompletedMessageTiming> getDictionaryTimings() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return java.util.Collections.emptyList();
+        }
+        return completedTimings.values().stream()
+            .filter(t -> t.usedDictionary)
+            .sorted(java.util.Comparator.comparing(t -> t.completionTimestamp))
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Get all messages that did NOT use dictionary compression
+     */
+    public java.util.List<CompletedMessageTiming> getNonDictionaryTimings() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return java.util.Collections.emptyList();
+        }
+        return completedTimings.values().stream()
+            .filter(t -> !t.usedDictionary)
+            .sorted(java.util.Comparator.comparing(t -> t.completionTimestamp))
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Compare average latency between dictionary and non-dictionary messages
+     */
+    public double getAverageLatencyByDictionary(boolean usedDictionary) {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return 0.0;
+        }
+        return completedTimings.values().stream()
+            .filter(t -> t.usedDictionary == usedDictionary)
+            .mapToLong(t -> t.endToEndLatencyMs)
+            .average()
+            .orElse(0.0);
+    }
+
+    /**
+     * Find fastest and slowest messages
+     */
+    public CompletedMessageTiming getFastestMessage() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return null;
+        }
+        return completedTimings.values().stream()
+            .min(java.util.Comparator.comparing(t -> t.endToEndLatencyMs))
+            .orElse(null);
+    }
+
+    public CompletedMessageTiming getSlowestMessage() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return null;
+        }
+        return completedTimings.values().stream()
+            .max(java.util.Comparator.comparing(t -> t.endToEndLatencyMs))
+            .orElse(null);
+    }
+
+    /**
+     * Find messages above performance threshold
+     */
+    public java.util.List<CompletedMessageTiming> getSlowMessages(long thresholdMs) {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null) {
+            return java.util.Collections.emptyList();
+        }
+        return completedTimings.values().stream()
+            .filter(t -> t.endToEndLatencyMs > thresholdMs)
+            .sorted((a, b) -> Long.compare(b.endToEndLatencyMs, a.endToEndLatencyMs))
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * Generate detailed individual timing report
+     */
+    public String generateIndividualTimingReport() {
+        if (!ENABLE_MESSAGE_CORRELATION || completedTimings == null || completedTimings.isEmpty()) {
+            return "Individual timing tracking disabled or no data available";
+        }
+        
+        cleanupCompletedTimings();
+        
+        StringBuilder report = new StringBuilder();
+        report.append("=== INDIVIDUAL MESSAGE TIMING ANALYSIS ===\n");
+        report.append(String.format("Stored Timings: %d (max: %d)\n", 
+            completedTimings.size(), MAX_COMPLETED_TIMINGS));
+        
+        // Dictionary vs Non-Dictionary breakdown
+        java.util.List<CompletedMessageTiming> dictTimings = getDictionaryTimings();
+        java.util.List<CompletedMessageTiming> nonDictTimings = getNonDictionaryTimings();
+        
+        report.append(String.format("Dictionary Messages: %d (avg: %.1fms)\n", 
+            dictTimings.size(), getAverageLatencyByDictionary(true)));
+        report.append(String.format("Non-Dictionary Messages: %d (avg: %.1fms)\n", 
+            nonDictTimings.size(), getAverageLatencyByDictionary(false)));
+        
+        // Performance extremes
+        CompletedMessageTiming fastest = getFastestMessage();
+        CompletedMessageTiming slowest = getSlowestMessage();
+        
+        if (fastest != null) {
+            report.append(String.format("Fastest: %s\n", fastest));
+        }
+        if (slowest != null) {
+            report.append(String.format("Slowest: %s\n", slowest));
+        }
+        
+        // Slow message analysis
+        java.util.List<CompletedMessageTiming> slowMessages = getSlowMessages(100); // > 100ms
+        if (!slowMessages.isEmpty()) {
+            report.append(String.format("\nSlow Messages (>100ms): %d\n", slowMessages.size()));
+            slowMessages.stream()
+                .limit(5) // Top 5 slowest
+                .forEach(t -> report.append(String.format("  %s\n", t)));
+        }
+        
+        return report.toString();
     }
 
     // WebSocket.Listener unused callbacks

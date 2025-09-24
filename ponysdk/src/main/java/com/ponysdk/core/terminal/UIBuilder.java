@@ -76,6 +76,10 @@ public class UIBuilder {
     private int currentUpdateObjectId = -1;
     // Flag to prevent infinite recursion during pattern replay
     private boolean isInPatternReplay = false;
+    
+    // Message correlation for end-to-end latency tracking
+    private static final boolean ENABLE_MESSAGE_CORRELATION = true;
+    private String currentMessageObjectId = null;
 
     private RequestBuilder requestBuilder;
 
@@ -238,11 +242,23 @@ public class UIBuilder {
 
         try {
             if (ServerToClientModel.TYPE_CREATE == model) {
-                processCreate(buffer, binaryModel.getIntValue());
+                int objectId = binaryModel.getIntValue();
+                if (ENABLE_MESSAGE_CORRELATION) {
+                    currentMessageObjectId = String.valueOf(objectId);
+                }
+                processCreate(buffer, objectId);
             } else if (ServerToClientModel.TYPE_UPDATE == model) {
-                processUpdate(buffer, binaryModel.getIntValue());
+                int objectId = binaryModel.getIntValue();
+                if (ENABLE_MESSAGE_CORRELATION) {
+                    currentMessageObjectId = String.valueOf(objectId);
+                }
+                processUpdate(buffer, objectId);
             } else if (ServerToClientModel.TYPE_ADD == model) {
-                processAdd(buffer, binaryModel.getIntValue());
+                int objectId = binaryModel.getIntValue();
+                if (ENABLE_MESSAGE_CORRELATION) {
+                    currentMessageObjectId = String.valueOf(objectId);
+                }
+                processAdd(buffer, objectId);
             } else if (ServerToClientModel.TYPE_GC == model) {
                 processGC(buffer, binaryModel.getIntValue());
             } else if (ServerToClientModel.TYPE_REMOVE == model) {
@@ -650,6 +666,11 @@ public class UIBuilder {
         } else {
             log.warning("Cannot create PObject #" + objectID + " with widget type : " + widgetType);
             buffer.shiftNextBlock(false);
+            
+            // Clear correlation tracking on error
+            if (ENABLE_MESSAGE_CORRELATION) {
+                currentMessageObjectId = null;
+            }
         }
     }
 
@@ -662,6 +683,12 @@ public class UIBuilder {
             if (parentObject != null) {
                 parentObject.add(buffer, ptObject);
                 buffer.readBinaryModel(); // Read ServerToClientModel.END element
+                
+                // Send message acknowledgment for end-to-end latency tracking
+                if (ENABLE_MESSAGE_CORRELATION && currentMessageObjectId != null) {
+                    sendMessageAcknowledgment(currentMessageObjectId);
+                    currentMessageObjectId = null;
+                }
             } else {
                 log.warning("Cannot add " + ptObject + " to an garbaged parent object #" + parentId
                         + ", so we will consume all the buffer of this object");
@@ -670,6 +697,11 @@ public class UIBuilder {
         } else {
             log.warning("Add a null PTObject #" + objectID + ", so we will consume all the buffer of this object");
             buffer.shiftNextBlock(false);
+            
+            // Clear correlation tracking on error
+            if (ENABLE_MESSAGE_CORRELATION) {
+                currentMessageObjectId = null;
+            }
         }
     }
 
@@ -722,9 +754,20 @@ public class UIBuilder {
                     break;
                 }
             } while (buffer.hasEnoughKeyBytes());
+            
+            // Send message acknowledgment for end-to-end latency tracking
+            if (ENABLE_MESSAGE_CORRELATION && currentMessageObjectId != null) {
+                sendMessageAcknowledgment(currentMessageObjectId);
+                currentMessageObjectId = null;
+            }
         } else {
             log.warning("Update on a null PTObject #" + objectID + ", so we will consume all the buffer of this object");
             buffer.shiftNextBlock(false);
+            
+            // Clear correlation tracking on error
+            if (ENABLE_MESSAGE_CORRELATION) {
+                currentMessageObjectId = null;
+            }
         }
     }
 
@@ -1005,6 +1048,20 @@ public class UIBuilder {
                model == ServerToClientModel.TYPE_ADD_HANDLER ||
                model == ServerToClientModel.TYPE_REMOVE_HANDLER ||
                model == ServerToClientModel.TYPE_GC;
+    }
+    
+    /**
+     * Send message acknowledgment to server for end-to-end latency tracking
+     */
+    private void sendMessageAcknowledgment(String objectId) {
+        try {
+            final PTInstruction ackMsg = new PTInstruction();
+            ackMsg.put(ClientToServerModel.MESSAGE_ACK, objectId);
+            requestBuilder.send(ackMsg);
+            log.info("📤 Client ACK sent for object: " + objectId);
+        } catch (Exception e) {
+            log.warning("Failed to send message acknowledgment for object " + objectId + ": " + e.getMessage());
+        }
     }
 
     /**
