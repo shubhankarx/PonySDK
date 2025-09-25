@@ -322,6 +322,11 @@ public class UIBuilder {
                  */
                 final int patternId = binaryModel.getIntValue();
                 log.info("Processing dictionary pattern definition: " + patternId);
+                
+                // DICTIONARY MESSAGE CORRELATION: Set correlation ID for acknowledgment
+                if (ENABLE_MESSAGE_CORRELATION) {
+                    currentMessageObjectId = "DICT_PATTERN_" + patternId;
+                }
                 List<ModelValuePair> pattern = new ArrayList<>();
                 BinaryModel bm;
                 
@@ -421,6 +426,11 @@ public class UIBuilder {
                 //
                 final int refId = binaryModel.getIntValue();
                 log.info("📋 Dictionary reference received: " + refId);
+                
+                // DICTIONARY MESSAGE CORRELATION: Set correlation ID for acknowledgment
+                if (ENABLE_MESSAGE_CORRELATION) {
+                    currentMessageObjectId = "DICT_REF_" + refId;
+                }
 
                 // Get the pattern to extract object context with defensive error handling
                 try {

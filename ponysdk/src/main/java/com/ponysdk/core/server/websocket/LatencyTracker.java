@@ -171,9 +171,20 @@ public final class LatencyTracker implements WebSocket.Listener {
                 MessageLatencyData data = messageTracking.get(currentMessageId);
                 if (data != null) {
                     data.usedDictionary = true; // Fix timing issue: update after dictionary processing
-                    log.info("✅ Dictionary flag updated for message ID: {}", currentMessageId);
+                    log.debug("Dictionary flag updated for message ID: {}", currentMessageId);
                 } else {
-                    log.info("❌ Message {} NOT FOUND in tracking map", currentMessageId);
+                    // Try to find the most recent message if currentMessageId is not found
+                    // This handles cases where multiple messages are being processed
+                    String recentMessageId = findMostRecentPendingMessage();
+                    if (recentMessageId != null) {
+                        MessageLatencyData recentData = messageTracking.get(recentMessageId);
+                        if (recentData != null) {
+                            recentData.usedDictionary = true;
+                            log.debug("Dictionary flag updated for recent message ID: {}", recentMessageId);
+                        }
+                    } else {
+                        log.debug("No pending messages found to update dictionary flag");
+                    }
                 }
             }
             
@@ -816,7 +827,7 @@ public final class LatencyTracker implements WebSocket.Listener {
         MessageLatencyData data = new MessageLatencyData(
             System.nanoTime(), 
             messageId, 
-            currentTransmissionUsedDictionary // Initially false, updated later if dictionary used
+            false // Always start with false, will be updated in onDictionaryLookup() if dictionary is used
         );
         messageTracking.put(messageId, data);
         
@@ -955,6 +966,19 @@ public final class LatencyTracker implements WebSocket.Listener {
         return ENABLE_MESSAGE_CORRELATION;
     }
     // ========== END MESSAGE CORRELATION METHODS ==========
+    
+    /**
+     * Find the most recent pending message (used as fallback when currentMessageId is not set)
+     */
+    private String findMostRecentPendingMessage() {
+        if (!ENABLE_MESSAGE_CORRELATION || messageTracking == null) return null;
+        
+        return messageTracking.entrySet().stream()
+            .filter(e -> e.getValue().endToEndLatencyMs == null) // Not yet acknowledged
+            .max(java.util.Comparator.comparing(e -> e.getValue().startTime))
+            .map(e -> e.getKey())
+            .orElse(null);
+    }
 
     // ========== Getter Methods for MetricsExporter Integration ==========
 

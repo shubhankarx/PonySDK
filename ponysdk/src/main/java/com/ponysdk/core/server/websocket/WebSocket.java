@@ -1378,6 +1378,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     PRED.info("Found existing TYPE pattern #{} - sending reference instead of full TYPE command", patternId);
                     if (loggerOut.isTraceEnabled())
                         loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
+                    
+                    // DICTIONARY MESSAGE CORRELATION FIX: Generate message ID for end-to-end tracking
+                    String dictionaryMessageId = "DICT_REF_" + patternId;
+                    if (LatencyTracker.isMessageCorrelationEnabled() && listener instanceof LatencyTracker) {
+                        ((LatencyTracker) listener).onMessageSent(dictionaryMessageId);
+                    }
+                    
                     // Track hash reference
                     if (listener instanceof LatencyTracker) {
                         ((LatencyTracker)listener).onHashCompute("REF#" + patternId, new byte[0]);
@@ -1424,6 +1431,13 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                     PRED.info("Found existing pattern #{} for batch of {} elements - sending reference", patternId, testPattern.size());
                     if (loggerOut.isTraceEnabled())
                         loggerOut.trace("UIContext #{} : DICTIONARY_REFERENCE {}", this.uiContext.getID(), patternId);
+                    
+                    // DICTIONARY MESSAGE CORRELATION FIX: Generate message ID for end-to-end tracking
+                    String dictionaryMessageId = "DICT_REF_" + patternId;
+                    if (LatencyTracker.isMessageCorrelationEnabled() && listener instanceof LatencyTracker) {
+                        ((LatencyTracker) listener).onMessageSent(dictionaryMessageId);
+                    }
+                    
                     // Stage 3: Track hash reference
                     if (listener instanceof LatencyTracker) {
                         ((LatencyTracker)listener).onHashCompute("REF#" + patternId, new byte[0]);
@@ -1857,6 +1871,12 @@ public class WebSocket implements WebSocketListener, WebsocketEncoder {
                 // COMPETITIVE ANALYSIS: Protocol violations create O(n²) debugging complexity due to 
                 //                      cascading failures - one broken message corrupts all subsequent
                 // 
+                // DICTIONARY MESSAGE CORRELATION FIX: Generate message ID for pattern definition
+                String dictionaryPatternId = "DICT_PATTERN_" + newId;
+                if (LatencyTracker.isMessageCorrelationEnabled() && listener instanceof LatencyTracker) {
+                    ((LatencyTracker) listener).onMessageSent(dictionaryPatternId);
+                }
+                
                 // Send the pattern inline without protocol wrappers
                 websocketPusher.encode(ServerToClientModel.DICTIONARY_PATTERN_START, newId);
                 if (listener != null) listener.onOutgoingPonyFrame(ServerToClientModel.DICTIONARY_PATTERN_START, newId);

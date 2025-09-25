@@ -29,7 +29,7 @@
 }
 
 \title{Using Generative AI to Predict Data to Improve Latency at the Client: Dictionary Compression and Transformer-Based Prediction in PonySDK}
-\author{Shubhankar\\AI Group\\smartTrade Technologies\\Supervisor: Mathieu}
+\author{Shubhankar\\AI Group\\SmartTrade Technologies\\Supervisor: Mathieu Estrata and Youssef Mesri}
 \date{\today}
 
 \begin{document}
@@ -37,11 +37,7 @@
 \maketitle
 
 \begin{abstract}
-This report presents a prototype implementation combining dictionary compression with generative AI prediction to optimize WebSocket communications in real-time web applications. The system integrates three complementary technologies: frequency-based dictionary compression, trie-based pattern recognition, and CodeT5+ transformer models for UI sequence prediction. Built on the PonySDK framework, the prototype employs a multi-stage architecture that intercepts WebSocket messages, applies selective compression to predictable patterns, and maintains comprehensive latency tracking across all optimization stages.
-
-The prototype demonstrates the feasibility of AI-enhanced compression in controlled laboratory conditions. Performance evaluation shows compression ratios of 3.89x for dictionary-only optimization and 4.23x for the complete system including AI prediction, compared to baseline WebSocket deflate compression of 2.67x. Latency measurements indicate P95 latency improvements from 32.9ms (WebSocket deflate) to 21.3ms (complete system) under controlled testing conditions. The trie-based prediction component achieves 0.021ms average query time with 78.9% dictionary hit rates for repetitive UI patterns.
-
-This research contributes a novel dual-path prediction architecture combining fast trie-based lookup with transformer-based generative prediction, establishing a foundation for future deployment in production trading environments. The prototype validates the core hypothesis that selective encoding of predictable data patterns can achieve measurable performance improvements while maintaining system compatibility and providing comprehensive performance monitoring capabilities.
+This report presents an implementation of generative AI for data prediction to improve client-side latency in real-time web applications. The system combines dictionary compression, trie-based pattern recognition, and transformer-based prediction models to reduce latency and network overhead in WebSocket communications. Built on the PonySDK framework, the implementation employs a multi-stage architecture that intercepts WebSocket messages, applies intelligent compression using dynamic dictionaries, and leverages CodeT5+ transformer models for predictive data transmission. Performance analysis demonstrates significant reductions in both network traffic and end-to-end latency, particularly for repetitive UI operations common in trading applications.
 \end{abstract}
 
 \tableofcontents
@@ -49,103 +45,26 @@ This research contributes a novel dual-path prediction architecture combining fa
 
 \section{Introduction}
 
-\subsection{The Latency Challenge in Modern Trading Systems}
+Modern web applications, particularly those used in financial trading environments, require ultra-low latency communication between server and client. Traditional WebSocket optimizations through network-level compression and caching prove insufficient when dealing with highly dynamic, real-time data streams. This report documents the implementation of a generative AI system that combines dictionary compression with transformer-based prediction to optimize WebSocket communications within the PonySDK framework.
 
-In today's high-frequency trading environments, network latency directly translates to financial impact. Traditional WebSocket optimization techniques, while effective for general web applications, prove insufficient when applied to the dynamic, real-time data streams characteristic of trading platforms. The PonySDK framework, which enables Java-based web applications through WebSocket communication, faces particular challenges in optimizing the sequential encoding of structured data including primitive types, strings, and arrays.
+\subsection{Objectives}
 
-\subsection{Problem Statement}
-
-Current WebSocket optimization approaches suffer from three critical limitations:
-
-\begin{enumerate}
-    \item \textbf{Static Compression Inefficiency}: Traditional methods like GZIP and per-message deflate fail to leverage application-specific patterns, treating all data uniformly regardless of predictability
-    \item \textbf{Redundant Data Transmission}: Repetitive UI operations and market data updates create unnecessary network overhead in trading interfaces
-    \item \textbf{Lack of Semantic Awareness}: Existing compression algorithms operate at the byte level without understanding the underlying application logic or user interaction patterns
-\end{enumerate}
-
-These limitations become particularly pronounced in trading systems where microsecond-level latency improvements can significantly impact performance and profitability.
-
-\subsection{Research Innovation and Proposed Solution}
-
-This project proposes a novel approach that integrates \textbf{dictionary compression} with two complementary prediction mechanisms: \textbf{trie-based pattern recognition} and \textbf{transformer-based AI prediction}. The core innovation lies in the principle: \textit{"encode something we want to predict, do not encode something we cannot predict"} -- a selective optimization strategy that applies compression resources only where prediction models can demonstrate accuracy.
-
-The system architecture employs \textbf{separate prediction pathways}:
+The primary objectives of this implementation are:
 \begin{itemize}
-    \item \textbf{Trie-based prediction} for fast lookup of known UI interaction sequences
-    \item \textbf{CodeT5+ transformer models} for complex pattern generation via FastAPI integration
-    \item \textbf{Dictionary compression} as the foundational optimization layer
+    \item Implement dynamic dictionary compression for WebSocket message streams
+    \item Integrate generative AI models for predictive data transmission
+    \item Achieve measurable reductions in network traffic and latency
+    \item Maintain backward compatibility with existing PonySDK applications
+    \item Provide comprehensive performance monitoring and analysis tools
 \end{itemize}
 
-\subsection{Technical Approach}
+\subsection{Scope}
 
-The solution employs a two-phase implementation strategy:
-
-\textbf{Phase 1: Static Dictionary Implementation}
-\begin{itemize}
-    \item Leverages known PonySDK data values by representing them with concise codes
-    \item Implements frequency-based pattern detection with configurable thresholds
-    \item Establishes baseline compression performance for repetitive UI operations
-\end{itemize}
-
-\textbf{Phase 2: Dynamic Dictionary with Dual Prediction Systems}
-\begin{itemize}
-    \item \textbf{Trie Component}: Develops a prefix-based system for rapid lookup of known interaction triplets
-    \item \textbf{AI Component}: Integrates CodeT5+ transformer models through FastAPI endpoints for generative prediction
-    \item \textbf{Dictionary Evolution}: Creates a runtime-adaptive dictionary that can incorporate patterns from both prediction sources
-\end{itemize}
-
-\subsection{Prototype and MVP Scope}
-
-This research presents a \textbf{minimum viable product (MVP)} and prototype implementation designed to validate the core concepts and demonstrate feasibility. The system has been developed and tested within controlled laboratory conditions using the PonySDK framework. \textbf{Future work will involve deployment and validation within the smartTrade Technologies production environment}, utilizing actual Cockpit trading data and SMS UI integration.
-
-\subsection{Scientific Contribution}
-
-This research addresses three significant gaps in current literature:
-
-\begin{enumerate}
-    \item \textbf{Limited AI-Compression Integration}: While compression algorithms and predictive models have advanced independently, few systems integrate these technologies for real-time applications
-    \item \textbf{Application-Agnostic Optimization}: Current approaches treat all data uniformly, missing opportunities for domain-specific optimization in structured communication protocols
-    \item \textbf{Dual-Path Prediction Architecture}: The combination of fast trie-based lookup with slower but more sophisticated transformer prediction represents a novel architectural approach
-\end{enumerate}
-
-\subsection{Implementation Status and Validation}
-
-The prototype implementation includes comprehensive performance monitoring capabilities through the \texttt{WebSocketPerformanceTest.java} framework, which provides:
-\begin{itemize}
-    \item \textbf{Network monitoring}: Byte-level tracking of WebSocket frame transmission
-    \item \textbf{Memory usage analysis}: JVM heap utilization during dictionary operations
-    \item \textbf{Latency measurement}: Multi-stage latency decomposition with statistical analysis
-    \item \textbf{Dictionary efficiency metrics}: Hit rate and compression ratio tracking
-\end{itemize}
-
-The system follows rigorous scientific protocols, including standardized JVM warmup procedures and statistical significance testing methodologies.
-
-\subsection{Objectives and Expected Outcomes}
-
-The primary research objectives are to:
-
-\begin{itemize}
-    \item \textbf{Demonstrate Feasibility}: Prove that AI-enhanced dictionary compression can be implemented within WebSocket protocols
-    \item \textbf{Validate Dual Prediction Architecture}: Establish the effectiveness of combining trie-based and transformer-based prediction approaches
-    \item \textbf{Quantify Prototype Performance}: Document compression efficiency, prediction accuracy, and system overhead in controlled testing environments
-    \item \textbf{Establish Production Readiness Framework}: Define the requirements and protocols for future deployment in live trading systems
-\end{itemize}
-
-\subsection{Future Deployment Scope}
-
-Upon successful prototype validation, the system is designed for integration with:
-\begin{itemize}
-    \item \textbf{smartTrade Technologies trading platforms}
-    \item \textbf{Cockpit data streams and SMS UI interfaces}
-    \item \textbf{Production WebSocket communication channels}
-    \item \textbf{Real-world trading workloads with actual latency constraints}
-\end{itemize}
-
-\subsection{Document Structure}
-
-The following sections detail the theoretical foundation, prototype implementation architecture, experimental methodology, and performance analysis of this generative AI-enhanced WebSocket optimization system. The research contributes both to the academic understanding of AI-compression integration and to the practical advancement of ultra-low latency trading system architectures through demonstrated prototype capabilities.
+This implementation follows a two-phase approach: Step 1 implements a Static Dictionary leveraging known data values (as in PonySDK) by representing them with concise codes, and Step 2 develops a Dynamic Dictionary Model to detect and map known paths in a directed graph using key/value pairs. The system addresses the core research question of selectively encoding predictable data while avoiding encoding unpredictable elements.
 
 \section{Related Work and State of the Art}
+
+Needs rewrite : Generic data
 
 \subsection{WebSocket Protocol Optimization}
 
@@ -413,36 +332,7 @@ public synchronized Integer recordPattern(List<ModelValuePair> pattern) {
 
 \subsection{Latency Tracking System}
 
-The \texttt{LatencyTracker} component provides comprehensive performance monitoring across five distinct stages. Implementation follows rigorous scientific protocols established during development meetings:
-
-\subsubsection{JVM Warmup Protocol}
-
-To ensure accurate latency measurements, the system implements a standardized JVM warmup procedure:
-
-\begin{enumerate}
-    \item \textbf{Standard Mode Operation}: Run application in standard mode for 30-60 seconds
-    \item \textbf{Feature Activation}: Enable dictionary compression and pattern prediction features
-    \item \textbf{Stabilization Period}: Continue operation for additional 30-60 seconds before measurement
-    \item \textbf{Measurement Phase}: Begin latency data collection after warmup completion
-\end{enumerate}
-
-This protocol addresses JIT compilation effects and ensures consistent baseline measurements.
-
-\subsubsection{Latency Decomposition Methodology}
-
-The system implements comprehensive latency breakdown ensuring that "the sum of individual components equals the total end-to-end latency"\footnote{Daily meeting notes, September 24, 2025}:
-
-\begin{itemize}
-    \item \textbf{Interception Latency}: Time from message creation to dictionary lookup
-    \item \textbf{Dictionary Processing}: Pattern matching and compression decision time
-    \item \textbf{Encoding Latency}: Message serialization and WebSocket frame creation
-    \item \textbf{Network Transmission}: Time from frame write to client acknowledgment
-    \item \textbf{Validation}: Mathematical verification that component sum equals total latency
-\end{itemize}
-
-\subsubsection{Stage-by-Stage Performance Monitoring}
-
-The following table details the comprehensive tracking points implemented:
+The \texttt{LatencyTracker} component provides comprehensive performance monitoring across five distinct stages:
 
 \begin{table}[H]
 \centering
@@ -469,28 +359,6 @@ RedLine extends the existing PonySDK protocol with three new message types:
     \item \texttt{DICTIONARY\_PATTERN\_START}: Initiates dictionary pattern definition
     \item \texttt{DICTIONARY\_PATTERN\_END}: Terminates dictionary pattern definition
     \item \texttt{DICTIONARY\_REFERENCE}: References existing dictionary pattern
-\end{itemize}
-
-\subsection{Network Monitoring and Byte-Level Tracking}
-
-Based on production implementation findings, the system includes comprehensive network monitoring capabilities\footnote{Daily meeting notes, September 11, 2025}:
-
-\begin{itemize}
-    \item \textbf{Byte-Level Monitoring}: Track exact WebSocket frame sizes before and after compression
-    \item \textbf{Compression Ratio Analysis}: Real-time calculation of compression effectiveness per message type
-    \item \textbf{Dictionary Efficiency Metrics}: Monitor dictionary hit rates and pattern distribution
-    \item \textbf{Network Bandwidth Utilization}: Calculate total bandwidth savings achieved through optimization
-\end{itemize}
-
-\subsubsection{WebSocketPerformanceTest Integration}
-
-The WebSocketPerformanceTest.java implementation provides comprehensive performance benchmarking:
-
-\begin{itemize}
-    \item \textbf{Throughput Measurement}: Messages per second under various load conditions
-    \item \textbf{Memory Usage Tracking}: JVM heap utilization during dictionary operations
-    \item \textbf{Latency Distribution}: Statistical analysis of latency patterns across message types
-    \item \textbf{Concurrent User Simulation}: Performance validation under realistic load scenarios
 \end{itemize}
 
 \subsection{CodeT5+ Model Integration}
@@ -702,9 +570,7 @@ def bulk_evaluate(req: BulkEvalRequest):
 
 \subsubsection{Data Collection Environment}
 
-We collected performance data from a production-like PonySDK trading application over a 4-week period, capturing real user interaction patterns. Data collection followed rigorous experimental protocols established during daily development meetings to ensure scientific validity\footnote{Daily meeting notes, September 24, 2025}.
-
-The dataset consists of:
+We collected performance data from a production-like PonySDK trading application over a 4-week period, capturing real user interaction patterns. The dataset consists of:
 
 \begin{itemize}
     \item \textbf{UI Interaction Logs}: 2.3 million UI operation sequences from 47 concurrent user sessions
@@ -743,18 +609,6 @@ To ensure data quality and representativeness:
     \item \textbf{Pattern Verification}: Manual inspection of top 50 most frequent patterns for correctness
     \item \textbf{Cross-Validation}: Split dataset 70/20/10 for training/validation/testing
 \end{enumerate}
-
-\subsubsection{Scientific Experiment Validation}
-
-Rigorous validation protocols were established during implementation to ensure experimental validity\footnote{Daily meeting notes, September 11, 2025}:
-
-\begin{itemize}
-    \item \textbf{Controlled Environment}: All experiments conducted in isolated testing environment with consistent hardware
-    \item \textbf{Baseline Establishment}: Each measurement session begins with baseline latency measurement without optimizations
-    \item \textbf{JVM Stabilization}: Mandatory 30-60 second warmup periods before collecting performance data
-    \item \textbf{Statistical Significance}: Minimum 1000 samples per measurement with confidence interval calculation
-    \item \textbf{Repeatability}: All experiments conducted minimum 3 times with variance analysis
-\end{itemize}
 
 \subsection{Experimental Setup}
 
@@ -932,7 +786,6 @@ Performance analysis across different API endpoints shows consistent low-latency
 \label{tab:api-performance}
 \end{table}
 
-
 \section{Critical Implementations and Bug Fixes}
 
 \subsection{Dictionary Latency Tracking Fix}
@@ -940,17 +793,6 @@ Performance analysis across different API endpoints shows consistent low-latency
 A critical issue was discovered where dictionary-compressed messages showed 0ms latency measurements. This occurred because certain code paths didn't properly terminate messages with END markers, preventing the \texttt{onFrameWriteSuccess()} callback from firing.
 
 \textbf{Solution}: Added explicit END + flush0() calls at lines 1305, 1351, and 1679 in WebSocket.java.
-
-\subsubsection{HDR Histogram Integration}
-
-Implementation includes HDR (High Dynamic Range) histograms for percentile analysis\footnote{Daily meeting notes, August 29, 2025}:
-
-\begin{itemize}
-    \item \textbf{Percentile Calculation}: Replaced simple averaging with proper percentile analysis using HDR histograms
-    \item \textbf{updateMeanLatency Confusion}: Initial implementation incorrectly mixed percentile and average calculations
-    \item \textbf{Resolution}: Separated percentile tracking (P50, P95, P99) from mean latency calculation
-    \item \textbf{Precision}: Achieved microsecond-level precision for latency distribution analysis
-\end{itemize}
 
 \subsection{HashMap Key Normalization}
 
@@ -982,24 +824,6 @@ public boolean isPrefixOfKnownTriplet(List<String> sequence) {
 }
 \end{lstlisting}
 
-\subsection{Design Rationale and Performance Characteristics}
-
-We implemented a trie (prefix tree) data structure for widget interaction prediction due to its optimal characteristics for sequential pattern recognition in user interfaces. Unlike hash tables which offer O(1) lookup but lack sequential context, or traditional ML models requiring extensive training data, the trie provides O(m) lookup time where m is the pattern length, making sub-millisecond predictions feasible.
-
-The trie's prefix-sharing architecture is particularly suited to UI workflows where widget interactions follow predictable sequences (e.g., Button→Form→Submit), allowing the system to learn and predict patterns after just 3-5 repetitions. We chose a concurrent HashMap-based implementation for thread safety in the WebSocket environment, with each node storing transition frequencies and probability calculations.
-
-\subsubsection{Key Design Advantages}
-
-\begin{itemize}
-    \item \textbf{Real-time Learning}: Enables pattern learning without offline training requirements
-    \item \textbf{Graceful Degradation}: System continues functioning when predictions fail
-    \item \textbf{Memory Efficiency}: Storage optimization through shared prefixes
-    \item \textbf{Deterministic Performance}: Consistent 0.021ms average query time
-    \item \textbf{Incremental Pattern Building}: Learns patterns as users interact with the system
-\end{itemize}
-
-This design enables reducing perceived latency in interactive web applications where user behavior exhibits learnable patterns, making it ideal for the high-frequency interaction patterns characteristic of trading interfaces.
-
 \subsection{Integration with AI Prediction}
 
 When trie-based prediction fails, the system falls back to CodeT5 transformer models via FastAPI integration:
@@ -1021,111 +845,26 @@ private void processInstructionForPrediction(String instruction) {
 }
 \end{lstlisting}
 
-
-\section{Future Work}
-
-\subsection{Dynamic Dictionary Evolution}
-
-Current implementation uses a static threshold for pattern promotion. Future enhancements could implement:
-
-\begin{itemize}
-    \item \textbf{Adaptive Thresholds}: Dynamic adjustment based on application usage patterns
-    \item \textbf{Context-Aware Patterns}: Incorporation of user session context into pattern recognition
-    \item \textbf{Cross-Session Learning}: Pattern persistence across user sessions
-\end{itemize}
-
-\subsection{Enhanced AI Integration}
-
-\begin{itemize}
-    \item \textbf{Real-time Model Updates}: Online learning for transformer models
-    \item \textbf{Multi-modal Prediction}: Integration of user interaction patterns with data predictions
-    \item \textbf{Edge Computing}: Client-side AI inference for reduced latency
-\end{itemize}
-
-\subsection{Protocol Optimization}
-
-\begin{itemize}
-    \item \textbf{Binary Protocol}: Migration from JSON to more efficient binary encoding
-    \item \textbf{Differential Updates}: Transmission of only changed elements in complex data structures
-    \item \textbf{Predictive Prefetching}: Proactive transmission of likely-needed data
-\end{itemize}
-
-\section{Conclusion}
-
-RedLine represents a significant advancement in WebSocket optimization for real-time web applications. By combining dictionary compression, trie-based pattern recognition, and transformer-based AI prediction, the system achieves substantial reductions in both network traffic and latency.
-
-The implementation demonstrates the effectiveness of multi-layered optimization approaches, where different techniques complement each other to address various aspects of the communication pipeline. The comprehensive latency tracking system provides detailed insights into performance characteristics, enabling continuous optimization and monitoring.
-
-Key achievements include:
-\begin{itemize}
-    \item 45-60\% reduction in network traffic for repetitive operations
-    \item 47\% improvement in P95 end-to-end latency
-    \item Comprehensive performance monitoring across all optimization stages
-    \item Backward compatibility with existing PonySDK applications
-    \item Foundation for future AI-enhanced optimizations
-\end{itemize}
-
-The success of RedLine validates the approach of combining traditional compression techniques with modern AI capabilities, providing a robust foundation for ultra-low latency web applications in trading and other high-frequency domains.
-
-\appendix
-
-\section{Production Implementation Challenges}
-\label{annex:production-challenges}
-
-\subsection{AtomicLong Thread Safety Analysis}
-
-Detailed analysis from daily development meetings revealed critical thread safety issues in the latency tracking implementation\footnote{Daily meeting notes, August 29, 2025}:
-
-\begin{itemize}
-    \item \textbf{Problem Identified}: The \texttt{transmissionStartNanos} field used \texttt{AtomicLong} operations in single-threaded contexts
-    \item \textbf{Impact}: When multiple messages are transmitted rapidly, atomic comparisons fail due to concurrent updates
-    \item \textbf{Solution}: Replaced atomic operations with standard \texttt{long} fields in single-threaded message processing paths
-    \item \textbf{Performance Gain}: Eliminated unnecessary atomic overhead, reducing measurement latency by 2-3 microseconds per operation
-\end{itemize}
-
-\subsection{Dictionary Hit Rate Debugging}
-
-Significant debugging effort was required to resolve dictionary pattern matching issues\footnote{Daily meeting notes, September 16, 2025}:
-
-\begin{itemize}
-    \item \textbf{Symptom}: "Pattern reads as null, yet the object is still found successfully"
-    \item \textbf{Root Cause}: Cross-platform type equality issues between server-side Object[] and client-side JSONArray
-    \item \textbf{Implementation}: ContentComparator class (ContentComparator.java:55-260) normalizes both types to canonical string representations
-    \item \textbf{Result}: Dictionary hit rate improved from 45\% to 78.9\% for cross-platform message patterns
-\end{itemize}
-
-\subsection{UI Builder Stability Improvements}
-
-Extensive improvements were made to the UI builder component to handle dynamic dictionary switching\footnote{Daily meeting notes, September 16, 2025}:
-
-\begin{itemize}
-    \item \textbf{Object Handling}: Enhanced handling of complex UI component states during dictionary compression
-    \item \textbf{Dynamic Switching}: Implemented seamless switching between compressed and uncompressed modes
-    \item \textbf{State Consistency}: Ensured UI component state remains consistent across compression mode changes
-\end{itemize}
-
 \section{Deployment and System Requirements}
-\label{annex:deployment}
 
 \subsection{Environment Setup}
 
-The prototype system requires the following minimum configuration for basic functionality:
+The RedLine system requires careful environment configuration for optimal performance:
 
 \begin{table}[H]
 \centering
 \begin{tabular}{|l|l|l|}
 \hline
-\textbf{Component} & \textbf{Minimum Requirement} & \textbf{Recommended for Production} \\
+\textbf{Component} & \textbf{Minimum Requirement} & \textbf{Recommended} \\
 \hline
-Java Version & Java 9+ & Java 11+ \\
-Python Version & 3.7+ & 3.9+ \\
-RAM & 4GB & 16GB+ \\
-Storage & 2GB & 20GB+ \\
-CPU Cores & 2 cores & 8+ cores \\
-GPU (Optional) & None & 4GB+ VRAM for AI models \\
+Python Version & 3.8+ & 3.9+ \\
+RAM & 8GB & 16GB+ \\
+GPU Memory & 4GB VRAM & 8GB+ VRAM \\
+Storage & 10GB & 50GB+ \\
+CPU Cores & 4 cores & 8+ cores \\
 \hline
 \end{tabular}
-\caption{System Requirements for Prototype Deployment}
+\caption{System Requirements}
 \label{tab:system-requirements}
 \end{table}
 
@@ -1231,6 +970,51 @@ public class RedLineConfiguration {
 }
 \end{lstlisting}
 
+\section{Future Work}
+
+\subsection{Dynamic Dictionary Evolution}
+
+Current implementation uses a static threshold for pattern promotion. Future enhancements could implement:
+
+\begin{itemize}
+    \item \textbf{Adaptive Thresholds}: Dynamic adjustment based on application usage patterns
+    \item \textbf{Context-Aware Patterns}: Incorporation of user session context into pattern recognition
+    \item \textbf{Cross-Session Learning}: Pattern persistence across user sessions
+\end{itemize}
+
+\subsection{Enhanced AI Integration}
+
+\begin{itemize}
+    \item \textbf{Real-time Model Updates}: Online learning for transformer models
+    \item \textbf{Multi-modal Prediction}: Integration of user interaction patterns with data predictions
+    \item \textbf{Edge Computing}: Client-side AI inference for reduced latency
+\end{itemize}
+
+\subsection{Protocol Optimization}
+
+\begin{itemize}
+    \item \textbf{Binary Protocol}: Migration from JSON to more efficient binary encoding
+    \item \textbf{Differential Updates}: Transmission of only changed elements in complex data structures
+    \item \textbf{Predictive Prefetching}: Proactive transmission of likely-needed data
+\end{itemize}
+
+\section{Conclusion}
+
+RedLine represents a significant advancement in WebSocket optimization for real-time web applications. By combining dictionary compression, trie-based pattern recognition, and transformer-based AI prediction, the system achieves substantial reductions in both network traffic and latency.
+
+The implementation demonstrates the effectiveness of multi-layered optimization approaches, where different techniques complement each other to address various aspects of the communication pipeline. The comprehensive latency tracking system provides detailed insights into performance characteristics, enabling continuous optimization and monitoring.
+
+Key achievements include:
+\begin{itemize}
+    \item 45-60\% reduction in network traffic for repetitive operations
+    \item 47\% improvement in P95 end-to-end latency
+    \item Comprehensive performance monitoring across all optimization stages
+    \item Backward compatibility with existing PonySDK applications
+    \item Foundation for future AI-enhanced optimizations
+\end{itemize}
+
+The success of RedLine validates the approach of combining traditional compression techniques with modern AI capabilities, providing a robust foundation for ultra-low latency web applications in trading and other high-frequency domains.
+
 \section{Acknowledgments}
 
 The author thanks the smartTrade AI Group and supervisor Mathieu for guidance and support throughout this implementation. Special recognition goes to the PonySDK development team for providing a robust framework that enabled these advanced optimizations.
@@ -1240,7 +1024,7 @@ The author thanks the smartTrade AI Group and supervisor Mathieu for guidance an
 
 \bibitem{bytegpt}
 Zheng, Y., et al. (2024). ByteGPT: Beyond Language Models for Byte-Level Digital World Simulation. \textit{arXiv preprint arXiv:2402.19155}.
-
+mp.
 \bibitem{megabyte}
 Yu, L., et al. (2023). MegaByte: Predicting Million-byte Sequences with Multiscale Transformers. \textit{arXiv preprint arXiv:2305.07185}.
 
