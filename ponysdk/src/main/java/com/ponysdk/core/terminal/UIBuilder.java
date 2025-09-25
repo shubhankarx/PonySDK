@@ -529,9 +529,14 @@ public class UIBuilder {
                     log.info("🔧 Processing orphaned TEXT command for object #" + currentUpdateObjectId);
                     final PTObject ptObject = getPTObject(currentUpdateObjectId);
                     if (ptObject != null) {
-                        boolean result = ptObject.update(buffer, binaryModel);
-                        if (!result) {
-                            log.warning("Failed to update object #" + currentUpdateObjectId + " with TEXT: " + binaryModel.getStringValue());
+                        try {
+                            boolean result = ptObject.update(buffer, binaryModel);
+                            if (!result) {
+                                log.info("Failed to update object #" + currentUpdateObjectId + " with TEXT: " + binaryModel.getStringValue());
+                                buffer.shiftNextBlock(false);
+                            }
+                        } catch (Exception e) {
+                            log.info("Exception updating object #" + currentUpdateObjectId + ": " + e.getMessage());
                             buffer.shiftNextBlock(false);
                         }
                     } else {

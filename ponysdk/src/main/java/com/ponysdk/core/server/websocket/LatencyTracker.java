@@ -60,6 +60,9 @@ public final class LatencyTracker implements WebSocket.Listener {
     // Track current transmission's dictionary usage
     private volatile boolean currentTransmissionUsedDictionary = false;
     
+    // Track current message ID for dictionary flag updates
+    private volatile String currentMessageId = null;
+    
     // Aggregate metrics
     private final AtomicLong totalTransmissions = new AtomicLong(0);
     private final AtomicLong totalTransmittedBytes = new AtomicLong(0);
@@ -162,6 +165,18 @@ public final class LatencyTracker implements WebSocket.Listener {
         if (cacheHit) {
             dictionaryHitCount.incrementAndGet();
             currentTransmissionUsedDictionary = true; // Mark current transmission as using dictionary
+            
+            // CRITICAL FIX: Update the current message's dictionary flag (timing fix)
+            if (ENABLE_MESSAGE_CORRELATION && currentMessageId != null) {
+                MessageLatencyData data = messageTracking.get(currentMessageId);
+                if (data != null) {
+                    data.usedDictionary = true; // Fix timing issue: update after dictionary processing
+                    log.info("✅ Dictionary flag updated for message ID: {}", currentMessageId);
+                } else {
+                    log.info("❌ Message {} NOT FOUND in tracking map", currentMessageId);
+                }
+            }
+            
             log.debug("Dictionary cache HIT: {}", patternKey);
         } else {
             dictionaryMissCount.incrementAndGet();
@@ -797,10 +812,11 @@ public final class LatencyTracker implements WebSocket.Listener {
         if (!ENABLE_MESSAGE_CORRELATION || messageId == null) return;
         
         correlatedMessageCount.incrementAndGet();
+        currentMessageId = messageId; // Track current message for dictionary flag updates
         MessageLatencyData data = new MessageLatencyData(
             System.nanoTime(), 
             messageId, 
-            currentTransmissionUsedDictionary
+            currentTransmissionUsedDictionary // Initially false, updated later if dictionary used
         );
         messageTracking.put(messageId, data);
         
@@ -836,6 +852,11 @@ public final class LatencyTracker implements WebSocket.Listener {
         if (data.isComplete()) {
             updateCorrelationStats(data);
             messageTracking.remove(messageId);
+            
+            // Clear current message ID if this was the current one
+            if (messageId.equals(currentMessageId)) {
+                currentMessageId = null;
+            }
         }
     }
     

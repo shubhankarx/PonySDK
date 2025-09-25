@@ -31,15 +31,22 @@ TRIE_MAX_DEPTH = 10                    // Maximum trie depth to prevent stack ov
 
 ### Essential Methods
 ```java
-// Server-side trie entry points
-WebSocket.tryPredictNextWidget(String currentWidget)
-WebSocket.learnWidgetSequenceInTrie(String widget)
-WebSocket.getTriePredictions(List<String> sequence)
+// Server-side trie entry points (ACTUAL IMPLEMENTATION)
+private void tryPredictNextWidget()  // No parameters - uses internal sequence
+private void learnWidgetSequenceInTrie()  // No parameters - uses internal sequence  
+private void validatePrediction()  // No parameters - validates against currentWidgetKey
 
-// Trie navigation and management
-TrieNode.addPattern(List<ModelValuePair> pattern)
-TrieNode.findPredictions(List<ModelValuePair> prefix)
-WidgetTrieNode.addWidgetSequence(List<String> widgets)
+// Trie navigation and management (ACTUAL IMPLEMENTATION)
+static void buildSemanticPatternTrieFromStrings(List<List<String>> patterns)
+static void buildSemanticPatternTrieFromPairs(List<List<ModelValuePair>> patterns)
+static void dumpTrie(TrieNode node, String prefix)
+static void dumpWidgetTrie(WidgetTrieNode node, String prefix, String path)
+
+// Global controls (ACTUAL IMPLEMENTATION)
+static void setTrieEnabledGlobally(boolean enabled)
+static void setCodeT5EnabledGlobally(boolean enabled)
+public void setTrieEnabled(boolean enabled)  // Instance method
+void registerWidgetInteractionTriplet(List<String> triplet)  // Registers patterns
 ```
 
 ## Overview
@@ -71,10 +78,11 @@ private static boolean trieEnabled = true;
 ```
 
 **Key Methods**:
-- `tryPredictNextWidget(String currentWidget)` - Predicts next likely widget interaction
-- `learnWidgetSequenceInTrie(String widget)` - Learns from user interaction patterns
-- `recordWidgetInteraction(String widgetId)` - Records widget usage for learning
+- `tryPredictNextWidget()` - Predicts next widget based on last 2 interactions in sequence
+- `learnWidgetSequenceInTrie()` - Learns from widget triplets (3-element sequences)
+- `processWidgetInteraction(ServerToClientSnapshot snapshot)` - Records widget interactions  
 - `setTrieEnabledGlobally(boolean enabled)` - Runtime control of trie features
+- `registerWidgetInteractionTriplet(List<String> triplet)` - Registers 3-widget patterns in trie
 
 #### 2. TrieNode.java - Pattern Prediction Engine
 **Location**: `ponysdk/src/main/java/com/ponysdk/core/server/websocket/TrieNode.java`

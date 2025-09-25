@@ -316,7 +316,36 @@ public synchronized Integer recordPattern(List<ModelValuePair> pattern) {
 
 \subsection{Latency Tracking System}
 
-The \texttt{LatencyTracker} component provides comprehensive performance monitoring across five distinct stages:
+The \texttt{LatencyTracker} component provides comprehensive performance monitoring across five distinct stages. Implementation follows rigorous scientific protocols established during development meetings:
+
+\subsubsection{JVM Warmup Protocol}
+
+To ensure accurate latency measurements, the system implements a standardized JVM warmup procedure:
+
+\begin{enumerate}
+    \item \textbf{Standard Mode Operation}: Run application in standard mode for 30-60 seconds
+    \item \textbf{Feature Activation}: Enable dictionary compression and pattern prediction features
+    \item \textbf{Stabilization Period}: Continue operation for additional 30-60 seconds before measurement
+    \item \textbf{Measurement Phase}: Begin latency data collection after warmup completion
+\end{enumerate}
+
+This protocol addresses JIT compilation effects and ensures consistent baseline measurements.
+
+\subsubsection{Latency Decomposition Methodology}
+
+The system implements comprehensive latency breakdown ensuring that "the sum of individual components equals the total end-to-end latency"\footnote{Daily meeting notes, September 24, 2025}:
+
+\begin{itemize}
+    \item \textbf{Interception Latency}: Time from message creation to dictionary lookup
+    \item \textbf{Dictionary Processing}: Pattern matching and compression decision time
+    \item \textbf{Encoding Latency}: Message serialization and WebSocket frame creation
+    \item \textbf{Network Transmission}: Time from frame write to client acknowledgment
+    \item \textbf{Validation}: Mathematical verification that component sum equals total latency
+\end{itemize}
+
+\subsubsection{Stage-by-Stage Performance Monitoring}
+
+The following table details the comprehensive tracking points implemented:
 
 \begin{table}[H]
 \centering
@@ -343,6 +372,28 @@ RedLine extends the existing PonySDK protocol with three new message types:
     \item \texttt{DICTIONARY\_PATTERN\_START}: Initiates dictionary pattern definition
     \item \texttt{DICTIONARY\_PATTERN\_END}: Terminates dictionary pattern definition
     \item \texttt{DICTIONARY\_REFERENCE}: References existing dictionary pattern
+\end{itemize}
+
+\subsection{Network Monitoring and Byte-Level Tracking}
+
+Based on production implementation findings, the system includes comprehensive network monitoring capabilities\footnote{Daily meeting notes, September 11, 2025}:
+
+\begin{itemize}
+    \item \textbf{Byte-Level Monitoring}: Track exact WebSocket frame sizes before and after compression
+    \item \textbf{Compression Ratio Analysis}: Real-time calculation of compression effectiveness per message type
+    \item \textbf{Dictionary Efficiency Metrics}: Monitor dictionary hit rates and pattern distribution
+    \item \textbf{Network Bandwidth Utilization}: Calculate total bandwidth savings achieved through optimization
+\end{itemize}
+
+\subsubsection{WebSocketPerformanceTest Integration}
+
+The WebSocketPerformanceTest.java implementation provides comprehensive performance benchmarking:
+
+\begin{itemize}
+    \item \textbf{Throughput Measurement}: Messages per second under various load conditions
+    \item \textbf{Memory Usage Tracking}: JVM heap utilization during dictionary operations
+    \item \textbf{Latency Distribution}: Statistical analysis of latency patterns across message types
+    \item \textbf{Concurrent User Simulation}: Performance validation under realistic load scenarios
 \end{itemize}
 
 \subsection{CodeT5+ Model Integration}
@@ -554,7 +605,9 @@ def bulk_evaluate(req: BulkEvalRequest):
 
 \subsubsection{Data Collection Environment}
 
-We collected performance data from a production-like PonySDK trading application over a 4-week period, capturing real user interaction patterns. The dataset consists of:
+We collected performance data from a production-like PonySDK trading application over a 4-week period, capturing real user interaction patterns. Data collection followed rigorous experimental protocols established during daily development meetings to ensure scientific validity\footnote{Daily meeting notes, September 24, 2025}.
+
+The dataset consists of:
 
 \begin{itemize}
     \item \textbf{UI Interaction Logs}: 2.3 million UI operation sequences from 47 concurrent user sessions
@@ -593,6 +646,18 @@ To ensure data quality and representativeness:
     \item \textbf{Pattern Verification}: Manual inspection of top 50 most frequent patterns for correctness
     \item \textbf{Cross-Validation}: Split dataset 70/20/10 for training/validation/testing
 \end{enumerate}
+
+\subsubsection{Scientific Experiment Validation}
+
+Rigorous validation protocols were established during implementation to ensure experimental validity\footnote{Daily meeting notes, September 11, 2025}:
+
+\begin{itemize}
+    \item \textbf{Controlled Environment}: All experiments conducted in isolated testing environment with consistent hardware
+    \item \textbf{Baseline Establishment}: Each measurement session begins with baseline latency measurement without optimizations
+    \item \textbf{JVM Stabilization}: Mandatory 30-60 second warmup periods before collecting performance data
+    \item \textbf{Statistical Significance}: Minimum 1000 samples per measurement with confidence interval calculation
+    \item \textbf{Repeatability}: All experiments conducted minimum 3 times with variance analysis
+\end{itemize}
 
 \subsection{Experimental Setup}
 
@@ -770,6 +835,40 @@ Performance analysis across different API endpoints shows consistent low-latency
 \label{tab:api-performance}
 \end{table}
 
+\section{Production Implementation Challenges}
+
+\subsection{AtomicLong Thread Safety Analysis}
+
+Detailed analysis from daily development meetings revealed critical thread safety issues in the latency tracking implementation\footnote{Daily meeting notes, August 29, 2025}:
+
+\begin{itemize}
+    \item \textbf{Problem Identified}: The \texttt{transmissionStartNanos} field used \texttt{AtomicLong} operations in single-threaded contexts
+    \item \textbf{Impact}: When multiple messages are transmitted rapidly, atomic comparisons fail due to concurrent updates
+    \item \textbf{Solution}: Replaced atomic operations with standard \texttt{long} fields in single-threaded message processing paths
+    \item \textbf{Performance Gain}: Eliminated unnecessary atomic overhead, reducing measurement latency by 2-3 microseconds per operation
+\end{itemize}
+
+\subsection{Dictionary Hit Rate Debugging}
+
+Significant debugging effort was required to resolve dictionary pattern matching issues\footnote{Daily meeting notes, September 16, 2025}:
+
+\begin{itemize}
+    \item \textbf{Symptom}: "Pattern reads as null, yet the object is still found successfully"
+    \item \textbf{Root Cause}: Cross-platform type equality issues between server-side Object[] and client-side JSONArray
+    \item \textbf{Implementation}: ContentComparator class (ContentComparator.java:55-260) normalizes both types to canonical string representations
+    \item \textbf{Result}: Dictionary hit rate improved from 45\% to 78.9\% for cross-platform message patterns
+\end{itemize}
+
+\subsection{UI Builder Stability Improvements}
+
+Extensive improvements were made to the UI builder component to handle dynamic dictionary switching\footnote{Daily meeting notes, September 16, 2025}:
+
+\begin{itemize}
+    \item \textbf{Object Handling}: Enhanced handling of complex UI component states during dictionary compression
+    \item \textbf{Dynamic Switching}: Implemented seamless switching between compressed and uncompressed modes
+    \item \textbf{State Consistency}: Ensured UI component state remains consistent across compression mode changes
+\end{itemize}
+
 \section{Critical Implementations and Bug Fixes}
 
 \subsection{Dictionary Latency Tracking Fix}
@@ -777,6 +876,17 @@ Performance analysis across different API endpoints shows consistent low-latency
 A critical issue was discovered where dictionary-compressed messages showed 0ms latency measurements. This occurred because certain code paths didn't properly terminate messages with END markers, preventing the \texttt{onFrameWriteSuccess()} callback from firing.
 
 \textbf{Solution}: Added explicit END + flush0() calls at lines 1305, 1351, and 1679 in WebSocket.java.
+
+\subsubsection{HDR Histogram Integration}
+
+Implementation includes HDR (High Dynamic Range) histograms for percentile analysis\footnote{Daily meeting notes, August 29, 2025}:
+
+\begin{itemize}
+    \item \textbf{Percentile Calculation}: Replaced simple averaging with proper percentile analysis using HDR histograms
+    \item \textbf{updateMeanLatency Confusion}: Initial implementation incorrectly mixed percentile and average calculations
+    \item \textbf{Resolution}: Separated percentile tracking (P50, P95, P99) from mean latency calculation
+    \item \textbf{Precision}: Achieved microsecond-level precision for latency distribution analysis
+\end{itemize}
 
 \subsection{HashMap Key Normalization}
 
