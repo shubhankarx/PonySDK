@@ -1,3 +1,136 @@
+# Dictionary ACK Tracking Debug Log
+
+## SOLUTION: Dictionary Flag Timing Issue (NEW - DECEMBER 2024)
+
+### The Real Problem
+Dictionary messages show `usedDictionary = false` in MessageLatencyData because the flag is captured **before** dictionary processing occurs. This causes dictionary messages to be misclassified as non-dictionary in the correlation system.
+
+### Root Cause Analysis
+1. **Timing Issue**: `onMessageSent()` captures `currentTransmissionUsedDictionary` immediately when correlation starts
+2. **Dictionary Processing Delay**: `onDictionaryLookup()` sets the flag to `true` only **after** dictionary processing
+3. **Result**: The flag is always `false` when stored in MessageLatencyData
+
+### The Fix
+Update LatencyTracker.java to retroactively update the dictionary flag:
+
+```java
+// LatencyTracker.java modifications
+private volatile String currentMessageId = null;
+
+public void onMessageSent(String messageId) {
+    if (!ENABLE_MESSAGE_CORRELATION || messageId == null) return;
+    
+    currentMessageId = messageId; // Track for dictionary updates
+    MessageLatencyData data = new MessageLatencyData(
+        System.nanoTime(), 
+        messageId, 
+        false // Always start false, update later if dictionary used
+    );
+    messageTracking.put(messageId, data);
+}
+
+public void onDictionaryLookup(String patternKey, boolean cacheHit) {
+    if (cacheHit) {
+        currentTransmissionUsedDictionary = true;
+        
+        // CRITICAL: Update pending correlation data
+        if (ENABLE_MESSAGE_CORRELATION && currentMessageId != null) {
+            MessageLatencyData data = messageTracking.get(currentMessageId);
+            if (data != null) {
+                data.usedDictionary = true; // Fix timing issue
+            }
+        }
+    }
+}
+```
+
+### What This Fixes
+- Dictionary messages now correctly show `usedDictionary = true`
+- End-to-end timing comparison between dictionary/non-dictionary messages works
+- Performance analysis accurately reflects dictionary usage
+
+### Test Verification
+Run `./gradlew runSampleSpring` and look for:
+```
+=== END-TO-END DICTIONARY PERFORMANCE COMPARISON ===
+Dictionary Messages: X (avg: Y.Zms)
+Non-Dictionary Messages: A (avg: B.Cms)
+```
+
+Both categories should show meaningful timing data.
+
+---
+
+## HISTORICAL CONTEXT (Previous Debug Sessions)
+
+### Original Issue Description
+When dictionary messages are sent, they bypass the normal message correlation flow, preventing end-to-end timing from being captured. The ACK system doesn't recognize dictionary messages.
+
+### Previous Attempts and Discoveries
+
+#### 1. Dictionary Messages Missing Correlation IDs
+**Problem**: Dictionary messages (DICTIONARY_REFERENCE, DICTIONARY_PATTERN_START) weren't triggering ACK responses
+**Attempted Fix**: Added message ID generation in WebSocket.java
+```java
+// For dictionary references
+String dictionaryMessageId = "DICT_REF_" + patternId;
+if (LatencyTracker.isMessageCorrelationEnabled()) {
+    ((LatencyTracker) listener).onMessageSent(dictionaryMessageId);
+}
+
+// For pattern definitions  
+String patternMessageId = "DICT_PATTERN_" + patternId;
+if (LatencyTracker.isMessageCorrelationEnabled()) {
+    ((LatencyTracker) listener).onMessageSent(patternMessageId);
+}
+```
+
+#### 2. Client-Side Correlation ID Setting
+**Problem**: UIBuilder wasn't setting currentMessageObjectId for dictionary messages
+**Attempted Fix**: Added correlation ID in UIBuilder.java
+```java
+if (ENABLE_MESSAGE_CORRELATION) {
+    currentMessageObjectId = "DICT_PATTERN_" + patternId;
+}
+```
+
+#### 3. Dictionary Compression Disabled Issue
+**Discovery**: Even with `-Dponysdk.websocket.dictionary.enabled=true`, dictionary was disabled
+**Root Cause**: 2-second delay in WebSocket initialization
+**Status**: Unresolved - dictionary appears disabled during testing
+
+### Test Results Log
+
+#### Test Run 1: Initial State
+```
+Dictionary Messages (avg): 0 messages
+Non-Dictionary Messages (avg): 1.23ms (count: 35)
+Dictionary Compression Disabled
+```
+
+#### Test Run 2: After Correlation Fixes
+```
+Dictionary Messages (avg): 0 messages  
+Non-Dictionary Messages (avg): 1.01ms (count: 38)
+Dictionary Still Disabled Despite Configuration
+```
+
+### Remaining Issues
+1. Dictionary compression not enabling properly despite configuration
+2. 2-second initialization delay may be preventing dictionary activation
+3. Need to verify dictionary messages actually flow through correlation system when enabled
+
+### Configuration Attempts
+- JVM Flag: `-Dponysdk.websocket.dictionary.enabled=true`
+- Gradle: `jvmArgs = ['-Dponysdk.websocket.dictionary.enabled=true']`
+- Result: Dictionary still shows as disabled
+
+### Next Steps (If Dictionary Were Enabled)
+1. Verify dictionary messages generate proper correlation IDs
+2. Confirm client sends ACK for dictionary messages
+3. Validate end-to-end timing captures for both message types
+4. Compare performance metrics between dictionary/non-dictionary flows
+
 # Dictionary Debug Log Analysis
 
 ## Overview

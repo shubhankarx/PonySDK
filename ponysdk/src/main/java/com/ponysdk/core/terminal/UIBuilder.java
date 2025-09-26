@@ -505,6 +505,12 @@ public class UIBuilder {
                             }
 
                             log.info("✅ PATTERN REPLAY COMPLETE: All properties processed for object #" + targetObjectId);
+                            
+                            // DICTIONARY ACK TRACKING FIX: Send acknowledgment after pattern replay
+                            if (ENABLE_MESSAGE_CORRELATION && currentMessageObjectId != null) {
+                                sendMessageAcknowledgment(currentMessageObjectId);
+                                currentMessageObjectId = null;
+                            }
 
                         } else if (targetObjectId != -1) {
                             log.warning("⚠️ Object #" + targetObjectId + " not found for pattern replay - deferring properties");
